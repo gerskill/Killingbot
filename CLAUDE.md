@@ -128,40 +128,17 @@ fill_col = range_hard ? color.red :
 
 ---
 
-## 🏆 TOP 10 BACKTESTED STRATEGIES (2026-05-14)
+## 🏆 ÉTAT DES STRATÉGIES
 
-> ⚠️ **INVALIDÉ — 2026-07-18** : issu du sweep automatique `agents/strategy_explorer.py`
-> (35 variantes), jamais confirmé en direct dans le Strategy Tester TradingView. Le rang 4
-> (`KB_15m`) a été recompilé et testé en direct le 2026-07-18 : résultat réel P&L −8.76%,
-> DD 8.98%, **PF 0.465 (perdant)**, WR 35.23%, Sharpe −1.243, 579 trades — à l'opposé complet
-> de la ligne ci-dessous. Les 9 autres lignes n'ont pas été re-testées et doivent être
-> considérées invalides jusqu'à vérification individuelle. Détail : `vault/BEST_STRATEGIES.md`.
+Le sweep KB_* de mai 2026 (35 variantes) a été **archivé** le 2026-07-25 — les chiffres
+étaient faux (`KB_15m` annoncé Sharpe 7.57, réel −1.243 en live) et se recopiaient malgré
+l'avertissement. Ne plus jamais coller de tableau de résultats non re-testés ici.
 
-| Rang | Stratégie | %/mois (⚠️ non vérifié) | WR | Trades | DD | Sharpe |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | KB_LOOSE_RR2.5_RR3.0 | 8.0% | 66% | 231 | -12.2% | 7.06 |
-| 2 | KB_1h | 7.9% | 67% | 420 | -6.1% | 7.51 |
-| 3 | KB_RR4 | 7.9% | 65% | 214 | -12.2% | 6.43 |
-| 4 | KB_15m | 7.9% | 67% | 414 | -5.7% | 7.57 |
-| 5 | KB_RR5 | 7.8% | 62% | 208 | -14.6% | 5.51 |
-| 6 | KB_LOOSE_RR2.5_RR3.0_RSI | 7.8% | 68% | 215 | -11.5% | 7.45 |
-| 7 | KB_LOOSE_RR2.5_RSI | 7.5% | 68% | 225 | -10.4% | 7.65 |
-| 8 | KB_LOOSE_RR2.5 | 7.5% | 66% | 241 | -11.8% | 7.04 |
-| 9 | KB_LOOSE | 7.2% | 69% | 246 | -11.5% | 7.80 |
-| 10 | KB_LOOSE_RSI | 7.0% | 70% | 230 | -10.4% | 8.16 |
+**État à jour, seule source qui fait foi : `vault/INDEX.md`.**
 
-**Common params top:**
-
-- EMA fast/slow: 7/21
-- Kijun: 26
-- ATR: 14, mult 1.5
-- EMA min separation: 0.15%
-- Cooldown: 3 bars
-- ATR min: 0.3%
-
-**⭐ Best overall:** `KB_LOOSE_RR2.5_RR3.0` — 8.02%/mois, WR 66%, Sharpe 7.06
-**⭐ Best Sharpe:** `KB_LOOSE_RSI` — Sharpe 8.16
-**⭐ Lowest DD:** `KB_15m` — -5.7%
+Résumé : une seule stratégie prouvée en direct (`pp_st_btc_4h_final`, BTC 4H), Stoic Lens
+non concluant en mécanique (4 variantes testées, edge discrétionnaire seulement), sweep
+KB_* entièrement invalidé.
 
 ---
 

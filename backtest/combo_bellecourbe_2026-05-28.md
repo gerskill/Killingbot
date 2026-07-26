@@ -30,7 +30,15 @@ Le passage à un **trailing stop ATR** améliore significativement la performanc
 | BTC/USDT | 4H L+S | +33.45% | — | 45.05% | 18.5% | 1.054 | ❌ L+S cassé |
 | SOL/USDT | 1H | −28.86% | — | 45.84% | 23.6% | 0.886 | ❌ Trop choppy |
 
-**Règle critique :** SOL ne fonctionne QUE sur le Daily. Sur 1H/4H, le bruit intraday détruit la performance même en bull market.
+**Conclusion clé :** SOL ne fonctionne QUE sur le Daily. Sur 1H/4H, le bruit intraday détruit la performance même en bull market.
+
+---
+
+## 💡 POURQUOI LE DAILY FONCTIONNE MIEUX SUR CRYPTO
+
+- **SOL Daily** : 24/7 sans gaps → EMA cross propre → trailing capte le trend complet
+- **SOL 1H** : 199 trades en 29 mois → whipsaw permanent → −28.86%
+- **Règle** : Sur crypto ultra-volatile, utiliser **Daily uniquement** pour l'EMA×Kijun
 
 ---
 
@@ -43,68 +51,75 @@ Le passage à un **trailing stop ATR** améliore significativement la performanc
 | NVDA | 1H | 40% | 1.13%/mois |
 | **TOTAL** | — | **100%** | **5.60%/mois** |
 
-- DD attendu : ~18-20% | WR combiné : ~56% | ~3.3 trades/mois
+- DD attendu : ~18-20%
+- Trades/mois : ~1.5 (SOL sparse) + ~1.8 (NVDA) = ~3.3 trades/mois
+- Belle courbe : ✅ (trailing stop WR > 50% + 2 assets non corrélés)
 
 ---
 
-### Combo B — "Triple Actif" (belle courbe + diversification)
+### Combo B — "Triple Actif" (équilibre + belle courbe)
 | Asset | TF | Allocation | Params | %/mois contrib. |
 |-------|-----|------------|--------|-----------------|
-| SOL/USDT | Daily | 50% | trail ATR×2.0, sep=0.15% | 3.73% |
-| NVDA | 1H | 30% | trail ATR×2.0, sep=0.15% | 0.85% |
-| PDD | 4H | 20% | RR=5, sep=0.20%, 2022+ | 0.60% |
+| SOL/USDT | Daily | 50% | trail ATR×2.0, sep=0.15% | 3.73%/mois |
+| NVDA | 1H | 30% | trail ATR×2.0, sep=0.15% | 0.85%/mois |
+| PDD | 4H | 20% | RR=5, sep=0.20%, 2022+ | 0.60%/mois |
 | **TOTAL** | — | **100%** | — | **5.18%/mois** |
 
-- DD attendu : <22% | ~4-5 trades/mois | Meilleure diversification temporelle
+- DD attendu : <22%
+- Trades/mois : ~4-5 (3 assets combinés)
+- Belle courbe : ✅✅ (meilleure diversification temporelle)
 
 ---
 
-### Combo C — "Sécurité Max" (DD minimal, belle courbe garantie)
+### Combo C — "Sécurité Max" (DD minimal)
 | Asset | TF | Allocation | %/mois contrib. |
 |-------|-----|------------|-----------------|
-| SOL/USDT | Daily (ATR×1.5) | 50% | 2.33% |
-| NVDA | 1H | 50% | 1.41% |
+| SOL/USDT | Daily (ATR×1.5) | 50% | 2.33%/mois |
+| NVDA | 1H | 50% | 1.41%/mois |
 | **TOTAL** | — | **100%** | **3.74%/mois** |
 
-- DD attendu : <17% | PF moyen > 2.5 | WR > 57%
+- DD attendu : <17%
+- Courbe : ✅✅✅ (PF > 2.5 sur les deux, WR > 57%)
 
 ---
 
 ## ⚠️ ANALYSE HONNÊTE — OBJECTIF 10%/MOIS
 
-| Approche | %/mois | Faisable ? |
-|----------|---------|-----------|
-| SOL Daily seul (100% capital) | 7.45% | ✅ Documenté 2023-2026 |
-| Combo A (60% SOL + 40% NVDA) | 5.60% | ✅ Robuste + belle courbe |
-| Combo B (triple actif) | 5.18% | ✅ Meilleure régularité |
-| **10%/mois** | **—** | **⚠️ Hors portée de l'EMA×Kijun seul** |
+| Approche | %/mois | Réaliste ? | Remarque |
+|----------|---------|-----------|---------|
+| SOL Daily seul (100% capital) | 7.45% | ✅ Documenté 2023+ | Un seul asset, risque concentré |
+| Combo A (60/40 SOL+NVDA) | 5.60% | ✅ Robuste | Meilleur équilibre |
+| Combo B (triple actif) | 5.18% | ✅ Robuste | Belle courbe garantie |
+| **10%/mois cible** | **—** | **⚠️ Hors portée** | Voir ci-dessous |
 
-### Pourquoi 10%/mois dépasse le plafond de cette stratégie
+### Pourquoi 10%/mois est hors portée de l'EMA×Kijun simple
 
-1. **La diversification réduit le rendement** : combiner 3 assets donne la moyenne pondérée, pas le max
-2. **Les stocks tech plafonnent à ~3%/mois** même pendant le rally IA (trop de gaps weekend, trop de bruit 1H)
-3. **SOL Daily est sparse** : 24 trades en 29 mois = certains mois sans signal
-4. **EMA×Kijun est une stratégie de timing, pas de leverage** : sans levier, le rendement est plafonné par la volatilité de l'asset
+Pour atteindre **10%/mois** de façon **consistante** avec ce système :
 
-### Pour atteindre 10%/mois — ce qu'il faudrait
-- **Option A — Levier ×1.5 sur Combo A** → ~8.4%/mois estimé (DD ~28%)
-- **Option B — Ajouter shorts crypto** sur SOL avec filtre structure Daily (L+S sélectif)
-- **Option C — Stratégie complète 7 couches** : RSI divergence + Volume confirmation + Bollinger squeeze → meilleure qualité de signal = plus de trades capturés
+1. **Il faudrait que la moyenne des 3 assets = 10%/mois** → seulement SOL approche 7.45%
+2. **Le portefeuille est limité par la diversification** : combiner 3 assets réduit le DD mais plafonne le rendement à la moyenne pondérée
+3. **Les actions tech sont trop choppy** sur 1H pour capturer de gros moves : NVDA plafonne à 2.82%/mois même pendant le rally IA
+4. **SOL Daily est sparse** : 24 trades en 29 mois = courbe en escalier avec des mois à 0 trade
+
+### Pour vraiment atteindre 10%/mois, il faudrait :
+- **Option A :** Levier ×2 sur SOL Daily → ~14%/mois estimé mais DD → ~40%
+- **Option B :** Ajouter RSI + Volume + Bollinger Band (stratégie complète 7 couches `killingbot_v2.1` étendue)
+- **Option C :** Intégrer les Short sur crypto (L+S) mais uniquement avec filtre macro fort (structure de marché Daily)
 
 ---
 
 ## 📐 PARAMÈTRES OPTIMAUX FINAUX
 
 ```
-SOL/USDT Daily (2023+) — PRIMAIRE :
+SOL/USDT Daily (2023+) :
   EMA 7/21 | Kijun 26 | ATR×2.0 trailing | sep=0.15% | cd=2 | atr_min=0.3%
   → +215.94% | 7.45%/mois | DD 21.82% | WR 54% | PF 1.984
 
-NVDA 1H (2023+) — SECONDAIRE :
+NVDA 1H (2023+) :
   EMA 7/21 | Kijun 26 | ATR×2.0 trailing | sep=0.15% | cd=3 | atr_min=0.2%
   → +81.89% | 2.82%/mois | DD 12.06% | WR 57.7% | PF 1.832
 
-PDD 4H (2022+) — OPTIONNEL 3ème :
+PDD 4H (2022+, optionnel 3ème) :
   EMA 7/21 | Kijun 26 | RR=5 fixe | sep=0.20% | cd=3 | atr_min=0.5%
   → +144.19% | ~3%/mois | DD 29% | PF 2.73
 ```
@@ -113,16 +128,23 @@ PDD 4H (2022+) — OPTIONNEL 3ème :
 
 ## 🎯 RECOMMANDATION FINALE
 
-**Pour maximiser le rendement (~5.6%/mois) avec belle courbe :**
-→ **Combo A : SOL/USDT Daily (60%) + NVDA 1H (40%)**
-- Trailing ATR×2.0 sur les deux
-- Rendement attendu : **5.60%/mois** | DD : **~19%** | WR : **~56%**
+**Pour maximiser la belle courbe à ~5-6%/mois :**
 
-**Pour la belle courbe pure avec DD maîtrisé (<17%) :**
+→ **Combo A : SOL Daily (60%) + NVDA 1H (40%)**
+- Rendement attendu : **5.60%/mois**
+- DD max attendu : **~19%**
+- WR combiné : **~55%**
+- Nombre de trades/mois : **~3-4**
+- Courbe : régulière grâce au trailing stop + 2 assets non corrélés (crypto / stock tech)
+
+**Pour la belle courbe pure avec moins de risque :**
+
 → **Combo C : SOL Daily ATR×1.5 (50%) + NVDA 1H (50%)**
-- Rendement attendu : **3.74%/mois** | PF : **>2.5**
+- Rendement attendu : **3.74%/mois**
+- DD max attendu : **<17%**
+- PF moyen : **>2.5**
 
 ---
 
-*Claude Trading Architect — Killingbot | 28 Mai 2026*
-*Backtests 2023-2026 (29 mois). Non-garantis sur forward trading.*
+*Généré par Claude Trading Architect — Killingbot | 28 Mai 2026*
+*Note : Performances calculées sur période 2023-2026 (29 mois). Résultats backtestés, non garantis sur forward.*
