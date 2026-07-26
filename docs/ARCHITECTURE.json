@@ -8,7 +8,8 @@
     "Ne jamais executer d'ordre reel automatiquement. Paper trading uniquement jusqu'a validation walk-forward.",
     "Un seul script attache au chart TradingView a la fois : empiler 3+ strategies avec request.security declenche 'Internal server study error'.",
     "Tout resultat de backtest est in-sample tant que walk-forward non fait.",
-    "Le walk-forward est la porte d'entree, pas la verification finale. Toute strategie candidate passe par agents/stoic_ribbon_wf.py avant d'etre presentee comme exploitable."
+    "Le walk-forward est la porte d'entree, pas la verification finale. Toute strategie candidate passe par agents/stoic_ribbon_wf.py avant d'etre presentee comme exploitable.",
+    "Comparer systematiquement au buy & hold : un systeme long only sur un actif qui a fait x9 peut afficher un gros chiffre sans rien apporter."
   ],
   "layers": [
     {
@@ -108,7 +109,7 @@
   "strategies": [
     {
       "fichier": "pp_st_btc_4h_final.pine",
-      "statut": "CONFIRMEE_LIVE",
+      "statut": "VALIDEE_WALK_FORWARD",
       "logique": "Pivot Point SuperTrend + EMA200 + ADX>=20, long only",
       "resultats": {
         "marche": "BINANCE:BTCUSDT 4H",
@@ -120,7 +121,18 @@
         "trades": 59
       },
       "note": "Seule strategie verifiee en direct dans le Strategy Tester. Base de reference.",
-      "walk_forward": "NON_FAIT — chiffres in-sample uniquement"
+      "walk_forward": {
+        "date": "2026-07-26",
+        "source": "API Binance 4h 2017-2026 (19189 barres)",
+        "oos_positifs": "6/10",
+        "bat_buy_and_hold": "7/10",
+        "degradation_mediane_pct": -70,
+        "panier_oos_moyen_pct_mois": 0.56,
+        "panier_oos_median_pct_mois": 0.35,
+        "deflated_sharpe": 0.025,
+        "monte_carlo_stabilite_pct": 100
+      },
+      "verdict": "SEULE strategie qui survit hors echantillon. Edge reel ~+0.35 a +0.56%/mois (4-7%/an), pas +3.88%. Trois reserves : coupe les gros gagnants (perd -33203% vs B&H sur BNB), aucun garde-fou quand le systeme ne convient pas au symbole (DOT PF 0.03), degradation IS->OOS de -70%."
     },
     {
       "fichier": "pine_scripts/strategies/pp_st_btc_4h_v2_ls.pine",
@@ -169,7 +181,7 @@
       "sweet_spot": "15m et Daily (l'entre-deux perd)",
       "resultats": "17/20 symboles positifs en Daily, aucun DD > 8.8%",
       "note": "Meilleure generalisation multi-marches. Tuning SPX-optimise casse BTC -> garder les defauts.",
-      "walk_forward": "NON_FAIT — chiffres in-sample uniquement"
+      "walk_forward": "NON_FAIT — dernier candidat non teste"
     },
     {
       "fichier": "pine_scripts/strategies/stoic_sbs.pine",
@@ -195,45 +207,58 @@
       "id": "G1",
       "titre": "Walk-forward ruban",
       "prio": "fait",
-      "detail": "26/07 : le ruban echoue. Voir backtest/WALK_FORWARD_2026-07-26.md",
-      "statut": "FAIT"
+      "statut": "FAIT",
+      "detail": "Echoue : OOS 3/10, degradation -131%."
     },
     {
       "id": "G1b",
-      "titre": "Walk-forward sur pp_st_btc_4h_final",
-      "prio": "haute",
-      "detail": "Seule strategie confirmee live, jamais soumise au walk-forward. Priorite suivante."
-    },
-    {
-      "id": "G1c",
-      "titre": "Walk-forward sur stoic_lens_pure_v2",
-      "prio": "haute",
-      "detail": "Meilleur candidat restant (17/20 Daily). Meme traitement."
+      "titre": "Walk-forward PP-ST",
+      "prio": "fait",
+      "statut": "FAIT",
+      "detail": "PASSE : OOS 6/10, panier +0.35%/mois median, bat B&H 7/10. Voir backtest/WALK_FORWARD_PPST_2026-07-26.md"
     },
     {
       "id": "G5",
       "titre": "Committer",
       "prio": "fait",
-      "detail": "164 fichiers commites le 26/07.",
-      "statut": "FAIT"
+      "statut": "FAIT",
+      "detail": "164 fichiers commites le 26/07."
     },
     {
-      "id": "G2",
-      "titre": "Grille 40x8",
-      "prio": "suspendue",
-      "detail": "Elargir une recherche in-sample sur un systeme qui echoue le WF ne produirait que des chiffres non exploitables. A relancer avec split IS/OOS integre."
+      "id": "G1c",
+      "titre": "Walk-forward sur stoic_lens_pure_v2",
+      "prio": "haute",
+      "detail": "Dernier candidat non teste (17/20 Daily in-sample)."
+    },
+    {
+      "id": "G8",
+      "titre": "Filtre d'eligibilite par symbole",
+      "prio": "moyenne",
+      "detail": "DOT : PF in-sample 0.03, aucun garde-fou. Refuser tout symbole sous un seuil de PF."
+    },
+    {
+      "id": "G9",
+      "titre": "Walk-forward glissant",
+      "prio": "moyenne",
+      "detail": "Le split 70/30 est unique. Fenetres successives = plus robuste."
     },
     {
       "id": "G6",
       "titre": "Opening Range NY",
       "prio": "moyenne",
-      "detail": "Vu sur le chart live @StoicTA. Absent de toutes les strategies."
+      "detail": "Vu sur le chart live @StoicTA, absent des strategies."
     },
     {
       "id": "G3",
       "titre": "Brancher garch_position_sizer.py",
-      "prio": "moyenne",
-      "detail": "Code pret, jamais appele depuis le webhook."
+      "prio": "basse",
+      "detail": "Utile seulement apres G1c/G8/G9."
+    },
+    {
+      "id": "G2",
+      "titre": "Grille 40x8",
+      "prio": "suspendue",
+      "detail": "A relancer avec split IS/OOS integre."
     },
     {
       "id": "G4",
@@ -257,6 +282,8 @@
   "outils_validation": {
     "agents/stoic_ribbon_wf.py": "port Python du ruban + runner walk-forward",
     "agents/validation.py": "walk_forward_split, deflated_sharpe_ratio, monte_carlo_stability",
-    "usage": "python agents/stoic_ribbon_wf.py --full --interval 8h --days 720"
+    "usage": "python agents/stoic_ribbon_wf.py --full --interval 8h --days 720",
+    "agents/ppst_wf.py": "port Python de PP-ST + walk-forward + comparaison buy&hold (donnees Binance)",
+    "note_donnees": "Paire nue (BTCUSDT) -> API Binance, historique complet. Le prefixe BINANCE: route vers le cache TradingView, pas vers l'API."
   }
 }
