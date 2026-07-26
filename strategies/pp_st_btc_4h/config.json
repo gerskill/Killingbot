@@ -1,0 +1,58 @@
+{
+  "id": "pp_st_btc_4h",
+  "symbol": "BTCUSDT",
+  "interval": "4h",
+  "created_at": "2026-07-25T08:16:56.836249+00:00",
+  "status": "REJECTED",
+  "setup_key": "PPST4H",
+  "params": {
+    "pivot_period": 2,
+    "atr_factor": 5.0,
+    "pp_atr_period": 14,
+    "adx_min": 20,
+    "ema_len": 200,
+    "atr_len": 14,
+    "sl_atr_mult": 1.5,
+    "risk_per_trade_pct": 1.0,
+    "tp_rr": null
+  },
+  "param_grid": {
+    "atr_factor": [
+      4.0,
+      5.0,
+      6.0
+    ],
+    "adx_min": [
+      15,
+      20,
+      25
+    ]
+  },
+  "gates": {
+    "G2_pf_oos_min": 1.2,
+    "G3_max_oos_degradation_pct": 30.0,
+    "G4_deflated_sharpe_min": 0.95,
+    "G5_mc_stability_min_pct": 80.0,
+    "G6_live_test": "manuel — Strategy Tester TradingView",
+    "max_dd_pct": 25.0,
+    "G1_min_trades_total": 30,
+    "G1_min_trades_oos": 10
+  },
+  "gate_results": {
+    "G1_min_trades": true,
+    "G2_pf_oos": true,
+    "G3_oos_degradation": false,
+    "G4_deflated_sharpe": false,
+    "G5_mc_stability": false,
+    "max_drawdown": true
+  },
+  "deploy_state": "paper",
+  "guardrails": {
+    "max_leverage": 2,
+    "max_drawdown_pct": 25,
+    "max_params_changed_per_iteration": 2,
+    "flip_flop_lookback_iterations": 3
+  },
+  "notes": "Portage Python de strategy.pine. Le Pine est la reference production (G6 passe le 2026-07-18).",
+  "validated_at": "2026-07-25T08:39:02.341628+00:00"
+}

@@ -1,0 +1,142 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════
+// KB CONFLUENCE v1 — synthèse pure des 12 éléments Kimi
+// (aucune base PP-ST, aucun recyclage KB Regime)
+// ─────────────────────────────────────────────────────────────
+// Élément 11 @thedelost    : VRP proxy — ratio RV courte/longue route le régime
+// Élément 6  @QuantifiedStrat: Triple RSI mean reversion (compression)
+// Élément 10 @sammy_capital : breakout "twitchy" — clôtures consécutives
+//                             + z-score volume (proxy vitesse du tape)
+// Élément 12 @toriotrades   : imbalance = cassure d'extrême N barres
+// Élément 5/7 @RohOnChain/Bell Labs : sizing half-Kelly auto-calculé,
+//                             plafonné 2% ("never risk more than 2%")
+//
+// Routage par régime de volatilité :
+//   RV20 > RV50 × 1.1  → EXPANSION  → moteur momentum seulement
+//   RV20 < RV50 × 0.9  → COMPRESSION → moteur mean reversion seulement
+//   entre les deux     → NEUTRE → aucune nouvelle entrée (discipline)
+// ═══════════════════════════════════════════════════════════════
+strategy("KB Confluence v1", overlay=true, shorttitle="KB-CONF",
+     initial_capital=10000,
+     default_qty_type=strategy.cash,
+     commission_type=strategy.commission.percent, commission_value=0.1,
+     slippage=2,
+     calc_on_every_tick=false)
+
+// ── Inputs ──────────────────────────────────────────────────────
+grpV = "Régime volatilité (VRP proxy)"
+rvFastLen  = input.int(20,   "RV courte (barres)",       minval=5,  group=grpV)
+rvSlowLen  = input.int(50,   "RV longue (barres)",       minval=10, group=grpV)
+expandMult = input.float(1.1,"Seuil expansion (×RV longue)", step=0.05, group=grpV)
+compMult   = input.float(0.9,"Seuil compression (×RV longue)", step=0.05, group=grpV)
+
+grpM = "Momentum — breakout twitchy"
+twitchyLen = input.int(3,    "Clôtures consécutives min", minval=2, maxval=8, group=grpM)
+volZLen    = input.int(20,   "Fenêtre z-score volume",    minval=5, group=grpM)
+// Tuning 2026-07-19 BINANCE:BTCUSD 12H deep (2020-2026) : volZ 1.5 + SL 1.5xATR
+// -> +65.4% / DD 9.9% / PF 1.87 / 84 trades. TF <12h : flat ou négatif.
+// ⚠️ ÉCHEC cross-asset : mêmes params sur ETHUSDT 12H (2017-2026) = -3.4% / PF 0.89.
+// Suspicion overfit BTC — walk-forward obligatoire avant tout usage réel.
+volZMin    = input.float(1.5,"Z-score volume min",        step=0.5, group=grpM)
+lookHH     = input.int(12,   "Extrême N barres (imbalance)", minval=4, group=grpM)
+momRR      = input.float(2.5,"RR momentum",               step=0.5, group=grpM)
+
+grpR = "Mean reversion — Triple RSI"
+rsiLen     = input.int(5,    "RSI longueur",              minval=2, group=grpR)
+rsiBuy     = input.float(30.0,"Seuil survente",           group=grpR)
+rsiSell    = input.float(70.0,"Seuil surachat",           group=grpR)
+rsiExit    = input.float(50.0,"Sortie (retour milieu)",   group=grpR)
+declBars   = input.int(3,    "Barres de baisse/hausse consécutives RSI", minval=2, maxval=5, group=grpR)
+trendLen   = input.int(200,  "EMA garde-fou tendance",    group=grpR)
+
+grpK = "Risque — half-Kelly"
+useKelly   = input.bool(true,"Sizing half-Kelly auto",    group=grpK)
+riskFix    = input.float(1.0,"Risque fixe si Kelly off (%)", step=0.25, group=grpK)
+riskCapPct = input.float(2.0,"Plafond risque (%) — règle des 2%", step=0.5, group=grpK)
+slAtrMult  = input.float(1.5,"SL (xATR)",                 step=0.5, group=grpK) // 1.0 = stops mitraillés (-0.1%), 2.0 = +50%, 1.5 = optimum (+65%)
+atrLen     = input.int(14,   "ATR longueur",              group=grpK)
+
+// ── Régime volatilité (élément 11 — VRP proxy) ─────────────────
+float ret    = ta.change(close) / close[1]
+float rvFast = ta.stdev(ret, rvFastLen)
+float rvSlow = ta.stdev(ret, rvSlowLen)
+bool volExpand   = rvFast > rvSlow * expandMult
+bool volCompress = rvFast < rvSlow * compMult
+
+// ── Momentum "twitchy" (éléments 10 + 12) ──────────────────────
+var int consec = 0
+consec := close > close[1] ? (nz(consec[1]) >= 0 ? nz(consec[1]) + 1 : 1) :
+          close < close[1] ? (nz(consec[1]) <= 0 ? nz(consec[1]) - 1 : -1) : 0
+
+float volMean = ta.sma(volume, volZLen)
+float volStd  = ta.stdev(volume, volZLen)
+float volZ    = volStd > 0 ? (volume - volMean) / volStd : 0.0
+
+float hhN = ta.highest(high, lookHH)[1]
+float llN = ta.lowest(low, lookHH)[1]
+
+bool momLong  = volExpand and consec >= twitchyLen  and volZ >= volZMin and close > hhN
+bool momShort = volExpand and consec <= -twitchyLen and volZ >= volZMin and close < llN
+
+// ── Triple RSI mean reversion (élément 6) ──────────────────────
+float r = ta.rsi(close, rsiLen)
+bool rsiFalling = true
+bool rsiRising  = true
+for i = 0 to declBars - 1
+    rsiFalling := rsiFalling and r[i] < r[i + 1]
+    rsiRising  := rsiRising  and r[i] > r[i + 1]
+
+float emaTrend = ta.ema(close, trendLen)
+bool mrLong  = volCompress and r < rsiBuy  and rsiFalling and close > emaTrend
+bool mrShort = volCompress and r > rsiSell and rsiRising  and close < emaTrend
+
+// ── Sizing half-Kelly (éléments 5/7) ───────────────────────────
+// f* = p − (1−p)/b, half-Kelly = f*/2, plafonné à riskCapPct.
+// Avant 15 trades fermés : risque fixe (pas assez de stats).
+float riskPctNow = riskFix
+if useKelly and strategy.closedtrades >= 15
+    float p    = strategy.wintrades / strategy.closedtrades
+    float avgW = strategy.wintrades  > 0 ? strategy.grossprofit / strategy.wintrades  : 0.0
+    float avgL = strategy.losstrades > 0 ? strategy.grossloss   / strategy.losstrades : 1.0
+    float b    = avgL > 0 ? avgW / avgL : 1.0
+    float kelly = b > 0 ? p - (1 - p) / b : 0.0
+    riskPctNow := math.max(0.25, math.min(riskCapPct, kelly * 100 / 2))
+
+float atrNow   = ta.atr(atrLen)
+float slDist   = slAtrMult * atrNow
+float riskCash = strategy.equity * riskPctNow / 100
+
+// ── Exécution ───────────────────────────────────────────────────
+bool flat = strategy.position_size == 0
+
+if flat and slDist > 0
+    float qty = riskCash / slDist
+    if momLong
+        strategy.entry("MomL", strategy.long, qty=qty)
+        strategy.exit("MomL-X", "MomL", stop=close - slDist, limit=close + momRR * slDist)
+    else if momShort
+        strategy.entry("MomS", strategy.short, qty=qty)
+        strategy.exit("MomS-X", "MomS", stop=close + slDist, limit=close - momRR * slDist)
+    else if mrLong
+        strategy.entry("MRL", strategy.long, qty=qty)
+        strategy.exit("MRL-SL", "MRL", stop=close - slDist)
+    else if mrShort
+        strategy.entry("MRS", strategy.short, qty=qty)
+        strategy.exit("MRS-SL", "MRS", stop=close + slDist)
+
+// Sortie MR : retour du RSI au milieu (l'edge de l'assureur est encaissé)
+if strategy.position_size > 0 and r > rsiExit
+    strategy.close("MRL")
+if strategy.position_size < 0 and r < rsiExit
+    strategy.close("MRS")
+
+// ── Visuel ──────────────────────────────────────────────────────
+plot(emaTrend, "EMA garde-fou", color=color.new(color.orange, 30))
+plot(hhN, "Extrême haut", color=color.new(color.teal, 70))
+plot(llN, "Extrême bas",  color=color.new(color.teal, 70))
+bgcolor(volExpand   ? color.new(color.red,   93) : na, title="Expansion vol")
+bgcolor(volCompress ? color.new(color.blue,  93) : na, title="Compression vol")
+plotshape(momLong,  "MomL", shape.triangleup,   location.belowbar, color.lime,   size=size.tiny)
+plotshape(momShort, "MomS", shape.triangledown, location.abovebar, color.red,    size=size.tiny)
+plotshape(mrLong,   "MRL",  shape.circle,       location.belowbar, color.aqua,   size=size.tiny)
+plotshape(mrShort,  "MRS",  shape.circle,       location.abovebar, color.fuchsia, size=size.tiny)

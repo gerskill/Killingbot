@@ -1,0 +1,302 @@
+//@version=6
+indicator("Markov Stochastic Multi-Timeframe [Killingbot]", overlay=true, max_bars_back=500)
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+// Timeframe selection
+tf_lf = input.string("5", "LTF (minutes)", tooltip="Low timeframe for entries")
+tf_mtf = input.string("60", "MTF (minutes)", tooltip="Medium timeframe confluence")
+tf_htf = input.string("1D", "HTF (daily/weekly)", tooltip="High timeframe bias")
+
+// Markov states & thresholds
+lookback = input.int(50, "Lookback bars for state history", minval=20, maxval=200)
+rsi_len = input.int(14, "RSI period", minval=5, maxval=50)
+bb_len = input.int(20, "Bollinger period", minval=10, maxval=50)
+bb_std = input.float(2.0, "BB standard deviation", minval=1.0, maxval=3.0)
+
+// State thresholds
+rsi_overbought = input.int(70, "RSI overbought level", minval=50, maxval=90)
+rsi_oversold = input.int(30, "RSI oversold level", minval=10, maxval=50)
+
+// Display options
+show_sessions = input.bool(true, "Show sessions (Zurich time)")
+show_table = input.bool(true, "Show probability table")
+show_alerts = input.bool(true, "Alert on high-prob transitions")
+
+// ============================================================================
+// SESSION TIMES (ZURICH / CET)
+// ============================================================================
+
+// Session detection (CET/CEST timezone)
+is_asian_session = (hour >= 8 and hour < 16)
+is_eu_session = (hour >= 8 and hour < 17)
+is_us_session = (hour >= 14.5 and hour < 23)  // 14:30 CET
+is_overlap_eu_us = (hour >= 14.5 and hour < 17)
+
+session_name = is_overlap_eu_us ? "EU-US Overlap" : is_us_session ? "US Session" : is_eu_session ? "EU Session" : is_asian_session ? "Asian Session" : "Off-Hours"
+session_color = is_overlap_eu_us ? color.new(color.orange, 85) : is_us_session ? color.new(color.blue, 85) : is_eu_session ? color.new(color.teal, 85) : is_asian_session ? color.new(color.purple, 85) : color.new(color.gray, 95)
+
+// Draw session background
+barcolor(show_sessions ? session_color : na, title="Session background")
+
+// ============================================================================
+// STATE DETECTION (Markov states: 0=Oversold, 1=Ranging, 2=Overbought)
+// ============================================================================
+
+rsi_val = ta.rsi(close, rsi_len)
+[bb_mid, bb_up, bb_dn] = ta.bb(close, bb_len, bb_std)
+
+// Define state
+get_state() =>
+    if rsi_val < rsi_oversold or close < bb_dn
+        0  // Oversold
+    else if rsi_val > rsi_overbought or close > bb_up
+        2  // Overbought
+    else
+        1  // Ranging
+
+current_state = get_state()
+
+// ============================================================================
+// TRANSITION MATRIX (empirical probabilities last N bars)
+// ============================================================================
+
+// Simple transition counting: count each type over lookback
+var count_0_to_0 = 0.0
+var count_0_to_1 = 0.0
+var count_0_to_2 = 0.0
+var count_1_to_0 = 0.0
+var count_1_to_1 = 0.0
+var count_1_to_2 = 0.0
+var count_2_to_0 = 0.0
+var count_2_to_1 = 0.0
+var count_2_to_2 = 0.0
+
+// Detect state change and update counts
+state_changed = current_state != current_state[1]
+
+if state_changed
+    if current_state[1] == 0
+        if current_state == 0
+            count_0_to_0 += 1
+        else if current_state == 1
+            count_0_to_1 += 1
+        else
+            count_0_to_2 += 1
+    else if current_state[1] == 1
+        if current_state == 0
+            count_1_to_0 += 1
+        else if current_state == 1
+            count_1_to_1 += 1
+        else
+            count_1_to_2 += 1
+    else
+        if current_state == 0
+            count_2_to_0 += 1
+        else if current_state == 1
+            count_2_to_1 += 1
+        else
+            count_2_to_2 += 1
+
+// Rolling window: reset every lookback bars
+var bar_counter = 0
+bar_counter += 1
+if bar_counter > lookback
+    count_0_to_0 := 0
+    count_0_to_1 := 0
+    count_0_to_2 := 0
+    count_1_to_0 := 0
+    count_1_to_1 := 0
+    count_1_to_2 := 0
+    count_2_to_0 := 0
+    count_2_to_1 := 0
+    count_2_to_2 := 0
+    bar_counter := 0
+
+// Normalize to probabilities
+total_0 = count_0_to_0 + count_0_to_1 + count_0_to_2 + 1
+total_1 = count_1_to_0 + count_1_to_1 + count_1_to_2 + 1
+total_2 = count_2_to_0 + count_2_to_1 + count_2_to_2 + 1
+
+prob_0_to_0 = math.round(100 * count_0_to_0 / total_0)
+prob_0_to_1 = math.round(100 * count_0_to_1 / total_0)
+prob_0_to_2 = math.round(100 * count_0_to_2 / total_0)
+prob_1_to_0 = math.round(100 * count_1_to_0 / total_1)
+prob_1_to_1 = math.round(100 * count_1_to_1 / total_1)
+prob_1_to_2 = math.round(100 * count_1_to_2 / total_1)
+prob_2_to_0 = math.round(100 * count_2_to_0 / total_2)
+prob_2_to_1 = math.round(100 * count_2_to_1 / total_2)
+prob_2_to_2 = math.round(100 * count_2_to_2 / total_2)
+
+// Next state probability based on current state (single line, no typed ternary)
+next_state_prob = current_state == 0 ? math.max(prob_0_to_1, prob_0_to_2) : (current_state == 1 ? math.max(prob_1_to_0, prob_1_to_2) : math.max(prob_2_to_0, prob_2_to_1))
+
+// ============================================================================
+// STOCHASTIC FILTERING (volatility scaling + momentum)
+// ============================================================================
+
+atr_val = ta.atr(14)
+atr_sma = ta.sma(atr_val, 50)
+vol_ratio = atr_val / atr_sma  // >1 = elevated vol
+
+// Scaled thresholds
+rsi_ob_scaled = rsi_overbought - math.round((vol_ratio - 1) * 5)
+rsi_os_scaled = rsi_oversold + math.round((vol_ratio - 1) * 5)
+
+// MEAN REVERSION SCORE (simplified Hurst: compare returns autocorrelation)
+returns = (close - close[1]) / close[1] * 100
+returns_sma_5 = ta.sma(returns, 5)
+returns_sma_20 = ta.sma(returns, 20)
+mean_reversion_score = returns_sma_5 < returns_sma_20 ? 1 : 0  // reverting = 1
+
+// VOLUME CONFIRMATION
+vol_sma = ta.sma(volume, 20)
+vol_strength = volume > vol_sma ? 1 : 0.5
+
+// MACD MOMENTUM
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+macd_bullish = macdLine > signalLine ? 1 : 0
+
+// COMPOSITE ROBUSTNESS SCORE
+robustness = (mean_reversion_score + vol_strength + macd_bullish) / 3
+
+// ============================================================================
+// MTF CONFLUENCE (request.security for higher timeframes)
+// ============================================================================
+
+rsi_mtf = request.security(syminfo.tickerid, tf_mtf, ta.rsi(close, rsi_len))
+rsi_htf = request.security(syminfo.tickerid, tf_htf, ta.rsi(close, rsi_len))
+
+state_mtf = rsi_mtf < rsi_oversold ? 0 : rsi_mtf > rsi_overbought ? 2 : 1
+state_htf = rsi_htf < rsi_oversold ? 0 : rsi_htf > rsi_overbought ? 2 : 1
+
+// Confluence score (HTF weighted 2x)
+confluence_score = (current_state * 1 + state_mtf * 1 + state_htf * 2) / 4
+
+// ============================================================================
+// KELLY CRITERION (position sizing optimization)
+// ============================================================================
+
+// Kelly f = (bp - q) / b where p=win%, q=loss%, b=avg win/loss ratio
+// Simplified: assume each state has intrinsic probability
+kelly_f_0 = (0.60 * 1.5 - 0.40) / 1.5  // oversold assumed 60% WR, 1.5:1 RR
+kelly_f_1 = (0.50 * 1.2 - 0.50) / 1.2  // ranging assumed 50% WR, 1.2:1 RR
+kelly_f_2 = (0.55 * 1.3 - 0.45) / 1.3  // overbought assumed 55% WR, 1.3:1 RR
+
+kelly_position_size = current_state == 0 ? kelly_f_0 : (current_state == 1 ? kelly_f_1 : kelly_f_2)
+kelly_pct = math.round(kelly_position_size * 100 * 0.25) / 100  // use 25% of Kelly for safety
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+high_prob_transition = next_state_prob >= 70 and show_alerts
+strong_confluence = confluence_score >= 1.5
+good_robustness = robustness >= 0.65
+
+alert_condition = high_prob_transition and strong_confluence and good_robustness
+alertcondition(alert_condition, title="Markov: High-Prob+Confluence+Robust", message="Trading signal detected. Check chart for state/prob/kelly values in table.")
+
+// ============================================================================
+// TABLE OUTPUT
+// ============================================================================
+
+if show_table and barstate.islast
+    var table tbl = table.new(position.top_right, 7, 6, border_color=color.gray, border_width=1)
+
+    // Headers row 0
+    table.cell(tbl, 0, 0, "STATE", text_color=color.white, bgcolor=color.new(color.black, 10))
+    table.cell(tbl, 1, 0, "→OS", text_color=color.white, bgcolor=color.new(color.red, 30))
+    table.cell(tbl, 2, 0, "→RNG", text_color=color.white, bgcolor=color.new(color.gray, 30))
+    table.cell(tbl, 3, 0, "→OB", text_color=color.white, bgcolor=color.new(color.green, 30))
+    table.cell(tbl, 4, 0, "NEXT%", text_color=color.white, bgcolor=color.new(color.orange, 30))
+    table.cell(tbl, 5, 0, "KELLY%", text_color=color.white, bgcolor=color.new(color.purple, 30))
+    table.cell(tbl, 6, 0, "SESSION", text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    // Oversold row
+    table.cell(tbl, 0, 1, "Oversold", text_color=color.white, bgcolor=color.new(color.red, 50))
+    table.cell(tbl, 1, 1, str.tostring(prob_0_to_0) + "%", text_color=color.white)
+    table.cell(tbl, 2, 1, str.tostring(prob_0_to_1) + "%", text_color=color.white)
+    table.cell(tbl, 3, 1, str.tostring(prob_0_to_2) + "%", text_color=color.white)
+    table.cell(tbl, 4, 1, current_state == 0 ? str.tostring(next_state_prob) + "%" : "-", text_color=color.white, bgcolor=current_state == 0 and next_state_prob >= 70 ? color.new(color.green, 20) : na)
+    table.cell(tbl, 5, 1, current_state == 0 ? str.tostring(kelly_pct) + "%" : "-", text_color=color.white)
+    table.cell(tbl, 6, 1, current_state == 0 ? session_name : "-", text_color=color.white, bgcolor=session_color)
+
+    // Ranging row
+    table.cell(tbl, 0, 2, "Ranging", text_color=color.white, bgcolor=color.new(color.gray, 50))
+    table.cell(tbl, 1, 2, str.tostring(prob_1_to_0) + "%", text_color=color.white)
+    table.cell(tbl, 2, 2, str.tostring(prob_1_to_1) + "%", text_color=color.white)
+    table.cell(tbl, 3, 2, str.tostring(prob_1_to_2) + "%", text_color=color.white)
+    table.cell(tbl, 4, 2, current_state == 1 ? str.tostring(next_state_prob) + "%" : "-", text_color=color.white, bgcolor=current_state == 1 and next_state_prob >= 70 ? color.new(color.green, 20) : na)
+    table.cell(tbl, 5, 2, current_state == 1 ? str.tostring(kelly_pct) + "%" : "-", text_color=color.white)
+    table.cell(tbl, 6, 2, current_state == 1 ? session_name : "-", text_color=color.white, bgcolor=session_color)
+
+    // Overbought row
+    table.cell(tbl, 0, 3, "Overbought", text_color=color.white, bgcolor=color.new(color.green, 50))
+    table.cell(tbl, 1, 3, str.tostring(prob_2_to_0) + "%", text_color=color.white)
+    table.cell(tbl, 2, 3, str.tostring(prob_2_to_1) + "%", text_color=color.white)
+    table.cell(tbl, 3, 3, str.tostring(prob_2_to_2) + "%", text_color=color.white)
+    table.cell(tbl, 4, 3, current_state == 2 ? str.tostring(next_state_prob) + "%" : "-", text_color=color.white, bgcolor=current_state == 2 and next_state_prob >= 70 ? color.new(color.green, 20) : na)
+    table.cell(tbl, 5, 3, current_state == 2 ? str.tostring(kelly_pct) + "%" : "-", text_color=color.white)
+    table.cell(tbl, 6, 3, current_state == 2 ? session_name : "-", text_color=color.white, bgcolor=session_color)
+
+    // Robustness row
+    table.cell(tbl, 0, 4, "Robustness", text_color=color.white, bgcolor=color.new(color.orange, 50))
+    table.cell(tbl, 1, 4, "MeanRev: " + str.tostring(mean_reversion_score), text_color=color.white)
+    table.cell(tbl, 2, 4, "Vol: " + str.tostring(math.round(vol_strength * 100)) + "%", text_color=color.white)
+    table.cell(tbl, 3, 4, "MACD: " + str.tostring(macd_bullish), text_color=color.white)
+    table.cell(tbl, 4, 4, "Score: " + str.tostring(math.round(robustness * 100) / 100), text_color=color.white, bgcolor=robustness >= 0.65 ? color.new(color.green, 30) : color.new(color.red, 30))
+    table.cell(tbl, 5, 4, "Vol: " + str.tostring(math.round(vol_ratio * 100) / 100) + "x", text_color=color.white)
+    table.cell(tbl, 6, 4, "ATR: " + str.tostring(math.round(atr_val * 100) / 100), text_color=color.white)
+
+    // Confluence row
+    table.cell(tbl, 0, 5, "CONFLUENCE", text_color=color.white, bgcolor=color.new(color.purple, 50))
+    table.cell(tbl, 1, 5, "LTF: " + str.tostring(current_state), text_color=color.white)
+    table.cell(tbl, 2, 5, "MTF: " + str.tostring(state_mtf), text_color=color.white)
+    table.cell(tbl, 3, 5, "HTF: " + str.tostring(state_htf), text_color=color.white)
+    table.cell(tbl, 4, 5, "Score: " + str.tostring(math.round(confluence_score * 100) / 100), text_color=color.white, bgcolor=confluence_score >= 1.5 ? color.new(color.green, 30) : color.new(color.red, 30))
+    table.cell(tbl, 5, 5, "Prob: " + str.tostring(math.round(next_state_prob)) + "%", text_color=color.white, bgcolor=next_state_prob >= 70 ? color.new(color.green, 50) : color.new(color.red, 50))
+    table.cell(tbl, 6, 5, session_name, text_color=color.white, bgcolor=session_color)
+
+// ============================================================================
+// PLOTS & VISUALIZATION
+// ============================================================================
+
+// Normalized plots (0-100 scale for overlay=true stability)
+// State: 0-2 → 0-66
+plot(current_state * 33.33, "Markov State (×33)", color=current_state == 0 ? color.red : current_state == 2 ? color.green : color.gray, linewidth=3, style=plot.style_stepline)
+
+// Transition probability: 0-100
+plot(next_state_prob, "Transition Prob %", color=color.orange, linewidth=2)
+
+// Robustness: 0-1 → 0-100
+plot(robustness * 100, "Robustness (0-100)", color=robustness >= 0.65 ? color.new(color.green, 30) : color.new(color.red, 30), linewidth=2)
+
+// RSI (native 0-100)
+plot(rsi_val, "RSI", color=color.blue, linewidth=1)
+hline(rsi_overbought, "RSI OB", color=color.new(color.green, 50), linestyle=hline.style_dashed)
+hline(rsi_oversold, "RSI OS", color=color.new(color.red, 50), linestyle=hline.style_dashed)
+hline(50, "RSI Mid", color=color.new(color.gray, 50), linestyle=hline.style_dotted)
+
+// BB normalized as price deltas (distance from close in ATR units, clamped 0-100)
+bb_up_norm = math.min(100, 50 + (bb_up - close) / atr_val * 10)
+bb_mid_norm = 50
+bb_dn_norm = math.max(0, 50 - (close - bb_dn) / atr_val * 10)
+plot(bb_up_norm, "BB Upper (normalized)", color=color.new(color.green, 50), linewidth=1)
+plot(bb_mid_norm, "BB Mid", color=color.new(color.gray, 50), linewidth=1)
+plot(bb_dn_norm, "BB Lower (normalized)", color=color.new(color.red, 50), linewidth=1)
+
+// Volume strength: 0-1 → 0-100
+plot(volume > vol_sma ? 100 : 0, "Vol Strength (0-100)", color=volume > vol_sma ? color.new(color.green, 70) : color.new(color.red, 70), linewidth=1)
+
+// ============================================================================
+// EXPORTED VALUES (for webhook)
+// ============================================================================
+
+// These can be read by external systems
+export_state = current_state
+export_prob = next_state_prob
+export_confluence = math.round(confluence_score * 100) / 100
+export_session = session_name

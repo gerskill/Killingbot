@@ -1,0 +1,575 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// 👑 STOIC EDGE STRATEGY v1.0 — Pine Script v6
+// Basé sur "The Only Trading Video That You Will Ever Need" — @StoicTA
+// Source: https://www.youtube.com/watch?v=O5_QSVjaDto
+//
+// Concepts implémentés :
+//   • HCOM / LCOM  — Highest/Lowest daily CLOSE of Month (pas les wicks)
+//   • PDH / PDL / PDC — Previous Day High / Low / Close
+//   • SMA 20 / 200 — Session bias (bullish/bearish/no-edge)
+//   • SFP — Swing Failure Pattern (Sweep & Retest)
+//   • BnR — Break & Retest (continuation)
+//   • SBS — Swing Breakout Sequence (modèle d'entrée)
+//   • Scoring 4 piliers — min 3/4 pour entrer
+//   • Gestion : T1 (50%) → BE stop → T2 (25%) → T3 runner (25%)
+//   • Sessions : London 03h00 / NY 09h30
+//   • No Edge Zone — background gris
+// ═══════════════════════════════════════════════════════════════════════════
+
+//@version=6
+strategy("👑 Stoic Edge Strategy v1.0",
+     shorttitle        = "StoicEdge",
+     overlay           = true,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 1,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.05,
+     slippage          = 2,
+     calc_on_every_tick = false,
+     max_bars_back     = 500,
+     process_orders_on_close = false)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS — RISK MANAGEMENT
+// ─────────────────────────────────────────────────────────────────────────────
+g1 = "⚙️ Risk Management"
+risk_pct     = input.float(1.0,  "Risk % per Trade",         minval=0.1, maxval=5.0,  step=0.1,  group=g1)
+atr_sl_mult  = input.float(1.5,  "ATR Stop Loss Multiplier", minval=0.3, maxval=5.0,  step=0.1,  group=g1)
+min_rr       = input.float(1.5,  "Min R:R Required",         minval=1.0, maxval=10.0, step=0.1,  group=g1)
+tp1_r        = input.float(2.0,  "T1 R:R (50% exit)",        minval=1.0, maxval=10.0, step=0.25, group=g1)
+tp2_r        = input.float(3.0,  "T2 R:R (25% exit)",        minval=1.0, maxval=15.0, step=0.25, group=g1)
+tp3_r        = input.float(4.236,"T3 R:R — Fib 423% runner", minval=1.0, maxval=20.0, step=0.25, group=g1)
+use_be_stop  = input.bool(true,  "Move SL → BE after T1 hit",                                    group=g1)
+
+// INPUTS — SETUP DETECTION
+g2 = "🎯 Setup Detection"
+pivot_len    = input.int(5,   "Pivot Length (SFP/BnR)", minval=2, maxval=30,  group=g2)
+sfp_atr_tol  = input.float(0.2, "SFP Level ATR Tolerance",  minval=0.05, maxval=1.0, step=0.05, group=g2,
+     tooltip="How close the wick must get to the level to count as a sweep")
+bnr_atr_tol  = input.float(0.5, "BnR Retest ATR Tolerance", minval=0.1,  maxval=2.0, step=0.1,  group=g2)
+hcom_atr_prox = input.float(1.0,"HCOM/LCOM Proximity ATR",  minval=0.2,  maxval=3.0, step=0.1,  group=g2)
+pdx_atr_prox  = input.float(0.5,"PDH/PDL Proximity ATR",    minval=0.1,  maxval=2.0, step=0.1,  group=g2)
+score_min    = input.int(3,   "Min Score to Enter (2-4)",  minval=2, maxval=4,       group=g2)
+
+// INPUTS — SESSIONS
+g3 = "🕐 Sessions"
+use_session  = input.bool(true,  "Filter by Session Only",    group=g3)
+sess_london  = input.session("0300-0900", "London Session",   group=g3)
+sess_ny      = input.session("1330-1930", "NY Session",       group=g3)
+sess_tz      = input.string("UTC", "Timezone",                group=g3,
+     options=["UTC","America/New_York","Europe/London","Europe/Paris","Asia/Tokyo","Asia/Singapore"])
+
+// INPUTS — DISPLAY
+g4 = "📊 Display"
+show_hcom_lcom  = input.bool(true,  "HCOM / LCOM lines",      group=g4)
+show_daily_lvl  = input.bool(true,  "PDH / PDL / PDC lines",  group=g4)
+show_sma        = input.bool(true,  "SMA 20 / 200",           group=g4)
+show_sess_bg    = input.bool(true,  "Session backgrounds",     group=g4)
+show_no_edge_bg = input.bool(true,  "No Edge Zone (gray bg)",  group=g4)
+show_sfp_marks  = input.bool(true,  "SFP markers",            group=g4)
+show_score_tbl  = input.bool(true,  "Score Table (top-right)", group=g4)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BASE INDICATORS
+// ─────────────────────────────────────────────────────────────────────────────
+sma20   = ta.sma(close, 20)
+sma200  = ta.sma(close, 200)
+atr14   = ta.atr(14)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PDH / PDL / PDC — Previous Day Levels
+// lookahead_on + [1] = safe: gives yesterday's values on today's bars
+// ─────────────────────────────────────────────────────────────────────────────
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_on)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HCOM / LCOM — Highest/Lowest daily CLOSE of current month
+// KEY: CLOSE not HIGH/LOW — wicks excluded (from video)
+// No lookahead: only bars already seen are used
+// ─────────────────────────────────────────────────────────────────────────────
+var float hcom          = na
+var float lcom          = na
+var float hcom_prev_mth = na  // last completed month's HCOM
+var float lcom_prev_mth = na  // last completed month's LCOM
+var int   _last_month   = 0
+
+cur_month = month(time)
+new_month = cur_month != _last_month
+
+if new_month
+    // Archive previous month before resetting
+    if not na(hcom)
+        hcom_prev_mth := hcom
+        lcom_prev_mth := lcom
+    // Start new month with current close
+    hcom         := close
+    lcom         := close
+    _last_month  := cur_month
+else
+    hcom := math.max(nz(hcom, close), close)
+    lcom := math.min(nz(lcom, close), close)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SMA BIAS
+// ─────────────────────────────────────────────────────────────────────────────
+bull_sma   = close > sma20 and sma20 > sma200   // clean uptrend structure
+bear_sma   = close < sma20 and sma20 < sma200   // clean downtrend structure
+no_edge_sma = not bull_sma and not bear_sma     // chop / no edge
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SESSION DETECTION
+// ─────────────────────────────────────────────────────────────────────────────
+in_london = not na(time(timeframe.period, sess_london, sess_tz))
+in_ny     = not na(time(timeframe.period, sess_ny,     sess_tz))
+in_session = not use_session or (in_london or in_ny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KEY LEVEL PROXIMITY (ATR-based)
+// ─────────────────────────────────────────────────────────────────────────────
+near_hcom = not na(hcom) and math.abs(close - hcom) < atr14 * hcom_atr_prox
+near_lcom = not na(lcom) and math.abs(close - lcom) < atr14 * hcom_atr_prox
+near_pdh  = not na(pdh)  and math.abs(close - pdh)  < atr14 * pdx_atr_prox
+near_pdl  = not na(pdl)  and math.abs(close - pdl)  < atr14 * pdx_atr_prox
+near_pdc  = not na(pdc)  and math.abs(close - pdc)  < atr14 * 0.3
+at_key_long  = near_lcom or near_pdl or near_pdc
+at_key_short = near_hcom or near_pdh or near_pdc
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PIVOT HIGHS / LOWS (for SFP & BnR)
+// ─────────────────────────────────────────────────────────────────────────────
+ph = ta.pivothigh(high, pivot_len, pivot_len)
+pl = ta.pivotlow(low,  pivot_len, pivot_len)
+
+var float last_ph = na
+var float last_pl = na
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SWING FAILURE PATTERN (SFP) = Sweep & Retest
+// Logic from video: wick sweeps a level → closes BACK inside → trapped side
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SFP Long: wick swept below swing low OR PDL/LCOM, candle closes above
+sfp_long = not na(last_pl) and
+     low   < last_pl - sfp_atr_tol * atr14 and   // wick swept below low
+     close > last_pl and                           // closed back above
+     close > open   and                            // bullish candle
+     at_key_long                                   // at meaningful level
+
+// Also trigger at PDL directly
+sfp_long_pdl = not na(pdl) and
+     low   < pdl - sfp_atr_tol * atr14 and
+     close > pdl and
+     close > open and
+     (near_lcom or near_pdc)
+
+sfp_long_signal = sfp_long or sfp_long_pdl
+
+// SFP Short: wick swept above swing high OR PDH/HCOM, candle closes below
+sfp_short = not na(last_ph) and
+     high  > last_ph + sfp_atr_tol * atr14 and   // wick swept above high
+     close < last_ph and                           // closed back below
+     close < open   and                            // bearish candle
+     at_key_short                                  // at meaningful level
+
+sfp_short_pdh = not na(pdh) and
+     high  > pdh + sfp_atr_tol * atr14 and
+     close < pdh and
+     close < open and
+     (near_hcom or near_pdc)
+
+sfp_short_signal = sfp_short or sfp_short_pdh
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BREAK & RETEST (BnR) — Continuation Setup
+// Logic: meaningful level broken by close → price returns to retest
+// ─────────────────────────────────────────────────────────────────────────────
+var bool  bnr_long_armed  = false
+var float bnr_long_level  = na
+var bool  bnr_short_armed = false
+var float bnr_short_level = na
+
+// Arm: clean break above PDH or above LCOM
+bool arm_long_pdh  = close > pdh  and close[1] <= pdh  and bull_sma
+bool arm_long_lcom = close > lcom and close[1] <= lcom and bull_sma
+if arm_long_pdh
+    bnr_long_armed := true
+    bnr_long_level := pdh
+if arm_long_lcom
+    bnr_long_armed := true
+    bnr_long_level := lcom
+
+// Arm: clean break below PDL or below HCOM
+bool arm_short_pdl  = close < pdl  and close[1] >= pdl  and bear_sma
+bool arm_short_hcom = close < hcom and close[1] >= hcom and bear_sma
+if arm_short_pdl
+    bnr_short_armed := true
+    bnr_short_level := pdl
+if arm_short_hcom
+    bnr_short_armed := true
+    bnr_short_level := hcom
+
+// Disarm if price runs away (no retest will come from too far)
+if bnr_long_armed  and close < bnr_long_level  - atr14 * 3.0
+    bnr_long_armed  := false
+if bnr_short_armed and close > bnr_short_level + atr14 * 3.0
+    bnr_short_armed := false
+
+// Retest signal: armed → price returns to level zone → bounces
+bnr_long_signal = bnr_long_armed and
+     low   <= bnr_long_level  + bnr_atr_tol * atr14 and
+     low   >= bnr_long_level  - bnr_atr_tol * atr14 and
+     close > bnr_long_level and
+     close > open and
+     bull_sma
+
+bnr_short_signal = bnr_short_armed and
+     high  >= bnr_short_level - bnr_atr_tol * atr14 and
+     high  <= bnr_short_level + bnr_atr_tol * atr14 and
+     close < bnr_short_level and
+     close < open and
+     bear_sma
+
+// Disarm after firing to avoid re-entry on same retest
+if bnr_long_signal
+    bnr_long_armed  := false
+if bnr_short_signal
+    bnr_short_armed := false
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4-PILLAR SCORING SYSTEM
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 — Monthly Extreme (HCOM / LCOM)
+p1_l = near_lcom ? 1 : 0
+p1_s = near_hcom ? 1 : 0
+
+// P2 — SMA Session Bias
+p2_l = bull_sma ? 1 : 0
+p2_s = bear_sma ? 1 : 0
+
+// P3 — Daily Level Confluence
+p3_l = (near_pdl or near_pdc) ? 1 : 0
+p3_s = (near_pdh or near_pdc) ? 1 : 0
+
+// P4 — Setup Present (SFP or BnR)
+p4_l = (sfp_long_signal  or bnr_long_signal)  ? 1 : 0
+p4_s = (sfp_short_signal or bnr_short_signal) ? 1 : 0
+
+score_l = p1_l + p2_l + p3_l + p4_l
+score_s = p1_s + p2_s + p3_s + p4_s
+
+is_golden_long  = score_l == 4
+is_golden_short = score_s == 4
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NO EDGE ZONE
+// ─────────────────────────────────────────────────────────────────────────────
+no_edge = no_edge_sma or (score_l < score_min and score_s < score_min)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+flat = strategy.position_size == 0
+
+enter_long  = flat and in_session and score_l >= score_min and
+              (sfp_long_signal  or bnr_long_signal)
+
+enter_short = flat and in_session and score_s >= score_min and
+              (sfp_short_signal or bnr_short_signal)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BE STOP MANAGEMENT
+// Track T1 hit to move stop to breakeven
+// ─────────────────────────────────────────────────────────────────────────────
+var float entry_sl    = na
+var float entry_price = na
+var bool  t1_hit      = false
+
+// On new entry, reset state
+if enter_long or enter_short
+    t1_hit      := false
+    entry_price := close
+    entry_sl    := enter_long
+         ? close - atr14 * atr_sl_mult
+         : close + atr14 * atr_sl_mult
+
+// Track T1 hit for long
+if strategy.position_size > 0 and not t1_hit
+    tp1_long_price = entry_price + (entry_price - entry_sl) * tp1_r
+    if high >= tp1_long_price
+        t1_hit := true
+
+// Track T1 hit for short
+if strategy.position_size < 0 and not t1_hit
+    tp1_short_price = entry_price - (entry_sl - entry_price) * tp1_r
+    if low <= tp1_short_price
+        t1_hit := true
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STRATEGY EXECUTION
+// ─────────────────────────────────────────────────────────────────────────────
+if enter_long
+    sl    = close - atr14 * atr_sl_mult
+    risk  = close - sl
+    tp1   = close + risk * tp1_r
+    tp2   = close + risk * tp2_r
+    tp3   = close + risk * tp3_r
+
+    // Skip if R:R below minimum
+    if risk > 0 and tp1_r >= min_rr
+        tag = is_golden_long ? "👑 LONG 4/4" : "⭐ LONG " + str.tostring(score_l) + "/4"
+        strategy.entry("L", strategy.long, comment=tag)
+        // T1: close 50%
+        strategy.exit("L-T1", "L", qty_percent=50,  limit=tp1, stop=sl, comment="T1 50%")
+        // T2: close 50% of remaining (= 25% of original)
+        strategy.exit("L-T2", "L", qty_percent=50,  limit=tp2, stop=use_be_stop ? close : sl, comment="T2 25%")
+        // T3: runner — close everything at extension target
+        strategy.exit("L-T3", "L", qty_percent=100, limit=tp3, stop=use_be_stop ? close : sl, comment="T3 runner")
+
+if enter_short
+    sl    = close + atr14 * atr_sl_mult
+    risk  = sl - close
+    tp1   = close - risk * tp1_r
+    tp2   = close - risk * tp2_r
+    tp3   = close - risk * tp3_r
+
+    if risk > 0 and tp1_r >= min_rr
+        tag = is_golden_short ? "👑 SHORT 4/4" : "⭐ SHORT " + str.tostring(score_s) + "/4"
+        strategy.entry("S", strategy.short, comment=tag)
+        strategy.exit("S-T1", "S", qty_percent=50,  limit=tp1, stop=sl, comment="T1 50%")
+        strategy.exit("S-T2", "S", qty_percent=50,  limit=tp2, stop=use_be_stop ? close : sl, comment="T2 25%")
+        strategy.exit("S-T3", "S", qty_percent=100, limit=tp3, stop=use_be_stop ? close : sl, comment="T3 runner")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TRAILING STOP — Update SL to BE after T1 (separate close order)
+// ─────────────────────────────────────────────────────────────────────────────
+if use_be_stop and t1_hit and strategy.position_size != 0
+    if strategy.position_size > 0
+        strategy.exit("L-BE", "L", stop=entry_price, comment="BE trail")
+    else
+        strategy.exit("S-BE", "S", stop=entry_price, comment="BE trail")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS — SMA
+// ─────────────────────────────────────────────────────────────────────────────
+plot(show_sma ? sma20  : na, "SMA 20",  color=color.new(color.dodgerblue, 0), linewidth=1)
+plot(show_sma ? sma200 : na, "SMA 200", color=color.new(color.orange,     0), linewidth=2)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS — PDH / PDL / PDC
+// ─────────────────────────────────────────────────────────────────────────────
+plot(show_daily_lvl ? pdh : na, "PDH",
+     color=color.new(color.red,   50), style=plot.style_linebr, linewidth=1)
+plot(show_daily_lvl ? pdl : na, "PDL",
+     color=color.new(color.lime,  50), style=plot.style_linebr, linewidth=1)
+plot(show_daily_lvl ? pdc : na, "PDC",
+     color=color.new(color.silver,60), style=plot.style_linebr, linewidth=1)
+
+// PDH/PDL labels — only on change
+pdh_changed = pdh != pdh[1]
+pdl_changed = pdl != pdl[1]
+if show_daily_lvl and pdh_changed and barstate.isconfirmed
+    label.new(bar_index, pdh, "PDH " + str.tostring(pdh, format.mintick),
+         style=label.style_label_left, size=size.tiny,
+         color=color.new(color.red, 70), textcolor=color.red)
+if show_daily_lvl and pdl_changed and barstate.isconfirmed
+    label.new(bar_index, pdl, "PDL " + str.tostring(pdl, format.mintick),
+         style=label.style_label_left, size=size.tiny,
+         color=color.new(color.lime, 70), textcolor=color.lime)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLOTS — HCOM / LCOM
+// ─────────────────────────────────────────────────────────────────────────────
+plot(show_hcom_lcom ? hcom : na, "HCOM",
+     color=color.new(color.red,   10), style=plot.style_linebr, linewidth=2)
+plot(show_hcom_lcom ? lcom : na, "LCOM",
+     color=color.new(color.lime,  10), style=plot.style_linebr, linewidth=2)
+
+// HCOM/LCOM label on first bar of month
+if show_hcom_lcom and new_month and barstate.isconfirmed
+    if not na(hcom_prev_mth)
+        label.new(bar_index, hcom_prev_mth,
+             "HCOM " + str.tostring(hcom_prev_mth, format.mintick),
+             style=label.style_label_right, size=size.tiny,
+             color=color.new(color.red,  60), textcolor=color.red)
+    if not na(lcom_prev_mth)
+        label.new(bar_index, lcom_prev_mth,
+             "LCOM " + str.tostring(lcom_prev_mth, format.mintick),
+             style=label.style_label_right, size=size.tiny,
+             color=color.new(color.lime, 60), textcolor=color.lime)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BACKGROUNDS — Sessions & No Edge Zone
+// ─────────────────────────────────────────────────────────────────────────────
+bgcolor(show_sess_bg and in_london and not in_ny ? color.new(color.blue,   93) : na, title="London BG")
+bgcolor(show_sess_bg and in_ny                   ? color.new(color.yellow, 93) : na, title="NY BG")
+bgcolor(show_no_edge_bg and no_edge              ? color.new(color.gray,   90) : na, title="No Edge BG")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY SIGNAL SHAPES
+// ─────────────────────────────────────────────────────────────────────────────
+// Golden (4/4)
+plotshape(enter_long  and is_golden_long,
+     title="👑 Golden Long",  style=shape.labelup,
+     location=location.belowbar, color=color.new(color.lime, 0),
+     text="👑", textcolor=color.black, size=size.normal)
+
+plotshape(enter_short and is_golden_short,
+     title="👑 Golden Short", style=shape.labeldown,
+     location=location.abovebar, color=color.new(color.red, 0),
+     text="👑", textcolor=color.white, size=size.normal)
+
+// Standard (3/4)
+plotshape(enter_long  and not is_golden_long,
+     title="⭐ Long",  style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.green, 20), size=size.small)
+
+plotshape(enter_short and not is_golden_short,
+     title="⭐ Short", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 30),   size=size.small)
+
+// SFP markers (when detected but not entering — info only)
+plotshape(show_sfp_marks and sfp_long_signal  and not enter_long,
+     title="SFP ↑",  style=shape.xcross,
+     location=location.belowbar, color=color.new(color.teal,   40), size=size.tiny)
+
+plotshape(show_sfp_marks and sfp_short_signal and not enter_short,
+     title="SFP ↓",  style=shape.xcross,
+     location=location.abovebar, color=color.new(color.maroon, 40), size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCORE TABLE — top right corner
+// ─────────────────────────────────────────────────────────────────────────────
+if show_score_tbl and barstate.islast
+    var table tbl = table.new(position.top_right, 3, 8,
+         bgcolor      = color.new(#0d1117, 10),
+         border_color = color.new(color.gray, 60),
+         border_width = 1,
+         frame_color  = color.new(color.gray, 40),
+         frame_width  = 1)
+
+    // ── Header row ──
+    table.cell(tbl, 0, 0, "STOIC EDGE",
+         text_color=color.new(color.gold,  0), text_size=size.small,
+         bgcolor=color.new(#161b22, 0))
+    table.cell(tbl, 1, 0, "LONG",
+         text_color=color.lime, text_size=size.small,
+         bgcolor=color.new(#161b22, 0))
+    table.cell(tbl, 2, 0, "SHORT",
+         text_color=color.red,  text_size=size.small,
+         bgcolor=color.new(#161b22, 0))
+
+    // ── P1 Monthly ──
+    table.cell(tbl, 0, 1, "P1 Monthly",
+         text_color=color.silver, text_size=size.tiny, bgcolor=color.new(#0d1117,0))
+    table.cell(tbl, 1, 1, p1_l == 1 ? "✅ LCOM" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p1_l == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+    table.cell(tbl, 2, 1, p1_s == 1 ? "✅ HCOM" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p1_s == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+
+    // ── P2 SMA ──
+    table.cell(tbl, 0, 2, "P2 SMA 20/200",
+         text_color=color.silver, text_size=size.tiny, bgcolor=color.new(#0d1117,0))
+    table.cell(tbl, 1, 2, p2_l == 1 ? "✅ Bull" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p2_l == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+    table.cell(tbl, 2, 2, p2_s == 1 ? "✅ Bear" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p2_s == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+
+    // ── P3 Daily ──
+    table.cell(tbl, 0, 3, "P3 Daily Level",
+         text_color=color.silver, text_size=size.tiny, bgcolor=color.new(#0d1117,0))
+    table.cell(tbl, 1, 3, p3_l == 1 ? "✅ PDL/C" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p3_l == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+    table.cell(tbl, 2, 3, p3_s == 1 ? "✅ PDH/C" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p3_s == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+
+    // ── P4 Setup ──
+    table.cell(tbl, 0, 4, "P4 Setup",
+         text_color=color.silver, text_size=size.tiny, bgcolor=color.new(#0d1117,0))
+    table.cell(tbl, 1, 4, p4_l == 1 ? "✅ SFP/BnR" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p4_l == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+    table.cell(tbl, 2, 4, p4_s == 1 ? "✅ SFP/BnR" : "❌",
+         text_color=color.white, text_size=size.tiny,
+         bgcolor=p4_s == 1 ? color.new(color.green, 70) : color.new(color.red, 80))
+
+    // ── Score row ──
+    long_clr  = score_l == 4 ? color.new(color.lime, 30) : score_l >= 3 ? color.new(color.green, 60) : color.new(color.red, 70)
+    short_clr = score_s == 4 ? color.new(color.lime, 30) : score_s >= 3 ? color.new(color.green, 60) : color.new(color.red, 70)
+    l_lbl = score_l == 4 ? "👑 4/4" : str.tostring(score_l) + "/4"
+    s_lbl = score_s == 4 ? "👑 4/4" : str.tostring(score_s) + "/4"
+
+    table.cell(tbl, 0, 5, "SCORE",
+         text_color=color.white, text_size=size.small,
+         bgcolor=color.new(#161b22, 0))
+    table.cell(tbl, 1, 5, l_lbl,
+         text_color=color.white, text_size=size.small, bgcolor=long_clr)
+    table.cell(tbl, 2, 5, s_lbl,
+         text_color=color.white, text_size=size.small, bgcolor=short_clr)
+
+    // ── Status row ──
+    status_txt = no_edge ? "❌  NO EDGE ZONE" : "🟢 EDGE PRESENT"
+    status_clr = no_edge ? color.new(color.red, 50) : color.new(color.green, 50)
+    table.cell(tbl, 0, 6, "STATUS",
+         text_color=color.white, text_size=size.tiny, bgcolor=color.new(#161b22, 0))
+    table.cell(tbl, 1, 6, status_txt,
+         text_color=color.white, text_size=size.small, bgcolor=status_clr)
+    table.cell(tbl, 2, 6, status_txt,
+         text_color=color.white, text_size=size.small, bgcolor=status_clr)
+
+    // ── Session row ──
+    sess_txt = in_london ? "🔵 London" : in_ny ? "🟡 NY" : "💤 Off-Hours"
+    table.cell(tbl, 0, 7, "SESSION",
+         text_color=color.silver, text_size=size.tiny, bgcolor=color.new(#0d1117,0))
+    table.cell(tbl, 1, 7, sess_txt,
+         text_color=color.white, text_size=size.tiny, bgcolor=color.new(#161b22,0))
+    table.cell(tbl, 2, 7, sess_txt,
+         text_color=color.white, text_size=size.tiny, bgcolor=color.new(#161b22,0))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERT CONDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+alertcondition(enter_long  and is_golden_long,
+     title="👑 GOLDEN LONG 4/4",
+     message="Stoic Edge — GOLDEN LONG 4/4 {{ticker}} @ {{close}}")
+
+alertcondition(enter_long  and score_l == 3,
+     title="⭐⭐ LONG 3/4",
+     message="Stoic Edge — LONG 3/4 {{ticker}} @ {{close}}")
+
+alertcondition(enter_short and is_golden_short,
+     title="👑 GOLDEN SHORT 4/4",
+     message="Stoic Edge — GOLDEN SHORT 4/4 {{ticker}} @ {{close}}")
+
+alertcondition(enter_short and score_s == 3,
+     title="⭐⭐ SHORT 3/4",
+     message="Stoic Edge — SHORT 3/4 {{ticker}} @ {{close}}")
+
+alertcondition(sfp_long_signal  and in_session,
+     title="SFP Long Detected",
+     message="Stoic SFP Long — {{ticker}} @ {{close}}")
+
+alertcondition(sfp_short_signal and in_session,
+     title="SFP Short Detected",
+     message="Stoic SFP Short — {{ticker}} @ {{close}}")
+
+alertcondition(no_edge,
+     title="No Edge Zone",
+     message="Stoic — NO EDGE ZONE on {{ticker}} — stay out")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// END OF STRATEGY
+// "The concept is not the edge. The trader's process is the edge." — @StoicTA
+// ─────────────────────────────────────────────────────────────────────────────

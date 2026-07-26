@@ -1,0 +1,157 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// STOIC LENS 1-2-3 — INDICATEUR (@StoicTA)
+// ───────────────────────────────────────────────────────────────────────────
+// Version indicateur (pas de backtest, juste signaux + niveaux + table).
+// Séquence 1-2-3 : Map (biais HTF) → Setup (chart) → Timing (TF bas optionnel).
+// Sélecteur "Style" : Scalp / Day / Swing / Position → règle map+timing tout seul.
+//   Scalp    : chart 5m  · map 15m   · timing 1m
+//   Day      : chart 5m  · map 60m   · timing 1m
+//   Swing    : chart 60m · map Daily · timing 15m   ← défaut
+//   Position : chart Daily · map Weekly · timing 60m
+// Couleurs en inputs → ajustables pour matcher l'indicateur de StoicTA.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("STOIC LENS 1-2-3", overlay = true, max_bars_back = 1000)
+
+// ── Style preset ────────────────────────────────────────────────────────────
+g1 = "Style (1-2-3)"
+style = input.string("Swing", "Style", options = ["Scalp", "Day", "Swing", "Position", "Custom"], group = g1, tooltip = "Met le chart sur le TF setup : Scalp=5m, Day=5m, Swing=60m, Position=Daily")
+cMapTF    = input.timeframe("D",  "Custom · Map TF",    group = g1)
+cTimingTF = input.timeframe("15", "Custom · Timing TF", group = g1)
+useTiming = input.bool(true,      "Utiliser le timing (3)", group = g1)
+
+mapTF    = style == "Scalp" ? "15" : style == "Day" ? "60" : style == "Swing" ? "D" : style == "Position" ? "W" : cMapTF
+timingTF = style == "Scalp" ? "1"  : style == "Day" ? "1"  : style == "Swing" ? "15": style == "Position" ? "60": cTimingTF
+
+// ── Piliers / setups ────────────────────────────────────────────────────────
+gP = "Piliers"
+minScore  = input.int(3,     "Score minimum (3=std, 4=Golden)", minval=2, maxval=4, group=gP)
+lvlTolAtr = input.float(0.5, "Proximite niveau (xATR)", step=0.1, minval=0.1, group=gP)
+fibLo     = input.float(0.50,"Fib zone basse",  step=0.01, group=gP)
+fibHi     = input.float(0.618,"Fib zone haute", step=0.01, group=gP)
+swingLen  = input.int(10,    "Longueur swing (pivots)", minval=3, group=gP)
+atrLen    = input.int(14,    "ATR longueur", group=gP)
+useBnR    = input.bool(true, "Setup Break & Retest", group=gP)
+useSFP    = input.bool(true, "Setup SFP / Sweep",    group=gP)
+
+gN = "No Edge Zone"
+noEdgePct = input.float(0.35,"Zone centrale interdite (% range)", minval=0.0, maxval=0.6, step=0.05, group=gN)
+minAtrPct = input.float(0.05,"Volatilite min (ATR/prix %)", minval=0.0, step=0.01, group=gN)
+
+// ── Couleurs (ajustables → match StoicTA) ───────────────────────────────────
+gC = "Couleurs"
+colHCOM = input.color(color.new(#ef5350, 0),  "HCOM (extreme haut)", group=gC)
+colLCOM = input.color(color.new(#26a69a, 0),  "LCOM (extreme bas)",  group=gC)
+colPDx  = input.color(color.new(#ff9800, 40), "PDH/PDL",             group=gC)
+colPDC  = input.color(color.new(#9e9e9e, 40), "PDC",                 group=gC)
+colS20  = input.color(color.new(#42a5f5, 30), "Map SMA20",           group=gC)
+colS200 = input.color(color.new(#ab47bc, 20), "Map SMA200",          group=gC)
+colLong = input.color(color.lime,  "Signal long",  group=gC)
+colShort= input.color(color.red,   "Signal short", group=gC)
+
+// ── TIER 1 — HCOM / LCOM (close journalier du mois) ─────────────────────────
+monthlyExtremes() =>
+    var float hc = na
+    var float lc = na
+    if ta.change(time("M")) != 0
+        hc := close
+        lc := close
+    else
+        hc := na(hc) ? close : math.max(hc, close)
+        lc := na(lc) ? close : math.min(lc, close)
+    [hc, lc]
+[hcom, lcom] = request.security(syminfo.tickerid, "D", monthlyExtremes(), lookahead = barmerge.lookahead_off)
+
+// ── 1 · MAP — biais SMA sur le map TF ───────────────────────────────────────
+mapBias() =>
+    float s20  = ta.sma(close, 20)
+    float s200 = ta.sma(close, 200)
+    int b = close > s20 and s20 > s200 ? 1 : close < s20 and s20 < s200 ? -1 : 0
+    [b, s20, s200]
+[mapDir, mapS20, mapS200] = request.security(syminfo.tickerid, mapTF, mapBias(), lookahead = barmerge.lookahead_off)
+bool biasLong  = mapDir ==  1
+bool biasShort = mapDir == -1
+bool noBias    = mapDir ==  0
+
+// ── TIER 2 — niveaux daily ──────────────────────────────────────────────────
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead = barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead = barmerge.lookahead_off)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_off)
+
+atrNow = ta.atr(atrLen)
+tol    = lvlTolAtr * atrNow
+
+bool p1Long  = not na(lcom) and math.abs(close - lcom) <= tol * 2
+bool p1Short = not na(hcom) and math.abs(close - hcom) <= tol * 2
+bool p3Long  = math.abs(close - pdl) <= tol or math.abs(close - pdc) <= tol
+bool p3Short = math.abs(close - pdh) <= tol or math.abs(close - pdc) <= tol
+
+// PILIER 4 — Fib 50-61.8
+float ph = ta.pivothigh(high, swingLen, swingLen)
+float pl = ta.pivotlow(low,  swingLen, swingLen)
+var float lastPH = na
+var float lastPL = na
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+float rng = (not na(lastPH) and not na(lastPL)) ? lastPH - lastPL : na
+bool  p4Long  = not na(rng) and rng > 0 and close >= lastPH - rng * fibHi and close <= lastPH - rng * fibLo
+bool  p4Short = not na(rng) and rng > 0 and close >= lastPL + rng * fibLo and close <= lastPL + rng * fibHi
+
+int scoreLong  = (p1Long ?1:0) + (biasLong ?1:0) + (p3Long ?1:0) + (p4Long ?1:0)
+int scoreShort = (p1Short?1:0) + (biasShort?1:0) + (p3Short?1:0) + (p4Short?1:0)
+
+// ── 3 · TIMING — confirmation TF bas ────────────────────────────────────────
+timingSMA() => ta.sma(close, 20)
+float timS20 = request.security(syminfo.tickerid, timingTF, timingSMA(), lookahead = barmerge.lookahead_off)
+bool timingLongOk  = not useTiming or na(timS20) or close > timS20
+bool timingShortOk = not useTiming or na(timS20) or close < timS20
+
+// ── No Edge Zone ────────────────────────────────────────────────────────────
+float dayRange = pdh - pdl
+bool  midRange = dayRange > 0 and math.abs(close - (pdh + pdl) / 2) < dayRange * noEdgePct / 2
+bool  tooQuiet = (atrNow / close * 100) < minAtrPct
+bool  noEdge   = midRange or tooQuiet or noBias
+
+// ── Setups ──────────────────────────────────────────────────────────────────
+bool bnrLong  = useBnR and ((close[1] < pdc and close >= pdc and low  <= pdc + tol) or (close[1] < pdh and close >= pdh and low  <= pdh + tol))
+bool bnrShort = useBnR and ((close[1] > pdc and close <= pdc and high >= pdc - tol) or (close[1] > pdl and close <= pdl and high >= pdl - tol))
+bool sfpLong  = useSFP and ((low  < pdl and close > pdl and close > open) or (not na(lcom) and low  < lcom and close > lcom and close > open))
+bool sfpShort = useSFP and ((high > pdh and close < pdh and close < open) or (not na(hcom) and high > hcom and close < hcom and close < open))
+
+bool goLong  = not noEdge and (bnrLong  or sfpLong)  and scoreLong  >= minScore and timingLongOk
+bool goShort = not noEdge and (bnrShort or sfpShort) and scoreShort >= minScore and timingShortOk
+
+// ── Plots ───────────────────────────────────────────────────────────────────
+plot(hcom,   "HCOM",       color = colHCOM, style = plot.style_linebr, linewidth = 2)
+plot(lcom,   "LCOM",       color = colLCOM, style = plot.style_linebr, linewidth = 2)
+plot(pdh,    "PDH",        color = colPDx,  style = plot.style_linebr)
+plot(pdl,    "PDL",        color = colPDx,  style = plot.style_linebr)
+plot(pdc,    "PDC",        color = colPDC,  style = plot.style_linebr)
+plot(mapS20, "Map SMA20",  color = colS20)
+plot(mapS200,"Map SMA200", color = colS200, linewidth = 2)
+bgcolor(noEdge ? color.new(color.gray, 92) : na, title = "No Edge")
+plotshape(goLong  and scoreLong  >= 4, "Golden Long",  shape.labelup,   location.belowbar, colLong,  text = "SBS", textcolor = color.black, size = size.small)
+plotshape(goLong  and scoreLong  == 3, "Long",         shape.triangleup, location.belowbar, colLong,  size = size.tiny)
+plotshape(goShort and scoreShort >= 4, "Golden Short", shape.labeldown, location.abovebar, colShort, text = "SBS", textcolor = color.white, size = size.small)
+plotshape(goShort and scoreShort == 3, "Short",        shape.triangledown, location.abovebar, colShort, size = size.tiny)
+
+// ── Table ───────────────────────────────────────────────────────────────────
+var table tbl = table.new(position.top_right, 2, 6, border_width = 1)
+if barstate.islast
+    table.cell(tbl, 0, 0, "STOIC " + style, text_color = color.white, bgcolor = color.new(color.black, 15))
+    table.cell(tbl, 1, 0, noEdge ? "NO EDGE" : (scoreLong >= scoreShort ? "LONG " + str.tostring(scoreLong) + "/4" : "SHORT " + str.tostring(scoreShort) + "/4"), text_color = color.white, bgcolor = noEdge ? color.new(color.gray, 30) : color.new(color.teal, 25))
+    table.cell(tbl, 0, 1, "Map / Timing")
+    table.cell(tbl, 1, 1, mapTF + " / " + (useTiming ? timingTF : "off"))
+    table.cell(tbl, 0, 2, "Biais map")
+    table.cell(tbl, 1, 2, biasLong ? "LONG" : biasShort ? "SHORT" : "NO EDGE")
+    table.cell(tbl, 0, 3, "HCOM / LCOM")
+    table.cell(tbl, 1, 3, str.tostring(hcom, format.mintick) + " / " + str.tostring(lcom, format.mintick))
+    table.cell(tbl, 0, 4, "PDH / PDL")
+    table.cell(tbl, 1, 4, str.tostring(pdh, format.mintick) + " / " + str.tostring(pdl, format.mintick))
+    table.cell(tbl, 0, 5, "P1/P2/P3/P4")
+    table.cell(tbl, 1, 5, (p1Long or p1Short ?"1":"0") + (noBias ?"0":"1") + (p3Long or p3Short ?"1":"0") + (p4Long or p4Short ?"1":"0"))
+
+alertcondition(goLong,  "Stoic Long",  "STOIC LONG")
+alertcondition(goShort, "Stoic Short", "STOIC SHORT")

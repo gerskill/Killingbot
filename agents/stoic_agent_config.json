@@ -1,0 +1,144 @@
+{
+  "_comment": "Configuration du Stoic Multi-Agent System — copier en .env pour les secrets",
+
+  "system": {
+    "name":              "Killingbot — Stoic Lens Multi-Agent System v1.0",
+    "version":           "1.0.0",
+    "scan_interval_min": 15,
+    "log_level":         "INFO"
+  },
+
+  "watchlist": {
+    "forex":   ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "GBPJPY", "AUDUSD", "NZDUSD", "USDCHF", "EURJPY", "EURGBP", "AUDCAD", "CADJPY", "EURCHF", "EURCAD", "GBPNZD"],
+    "metals":  ["XAUUSD", "XAGUSD"],
+    "indices": ["NAS100", "US30", "US500"],
+    "crypto":  ["BTCUSD", "ETHUSD"]
+  },
+
+  "stoic_lens_pillars": {
+    "pillar_1_hcom_lcom": {
+      "description": "HCOM = daily close > open (biais LONG) | LCOM = daily close < open (biais SHORT)",
+      "weight": 1
+    },
+    "pillar_2_sma": {
+      "description": "SMA20 > SMA200 = biais haussier | SMA20 < SMA200 = biais baissier (TF courant + Daily)",
+      "sma_fast": 20,
+      "sma_slow": 200,
+      "weight": 1
+    },
+    "pillar_3_key_levels": {
+      "description": "Proximité PDH/PDL/PDC ou niveaux hebdomadaires",
+      "tolerance_atr_mult": 0.5,
+      "weight": 1
+    },
+    "pillar_4_pattern": {
+      "description": "B&R (Break & Retest), SFP (Swing Failure Pattern), ou zone Fib 61.8-78.6%",
+      "fib_long_entry":  [0.618, 0.786],
+      "fib_short_entry": [0.618, 0.786],
+      "fib_tolerance_atr_mult": 0.6,
+      "weight": 1
+    }
+  },
+
+  "setup_quality": {
+    "min_score":        3,
+    "golden_sbs_score": 4,
+    "score_labels": {
+      "1": "Signal faible — ignoré",
+      "2": "Signal faible — ignoré",
+      "3": "B&R Standard — validé",
+      "4": "GOLDEN SBS — premium"
+    }
+  },
+
+  "risk_management": {
+    "max_risk_per_trade_pct": 1.0,
+    "max_daily_loss_pct":     3.0,
+    "max_open_trades":        3,
+    "min_rr_tp1":             1.5,
+    "default_rr_tp1":         2.0,
+    "default_rr_tp2":         3.5,
+    "sl_atr_mult":            1.5,
+    "trail_atr_mult":         0.8
+  },
+
+  "news_filter": {
+    "block_high_impact":        true,
+    "block_window_before_min":  30,
+    "block_window_after_min":   30,
+    "calendar_source":          "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "cache_duration_min":       60
+  },
+
+  "learning": {
+    "algorithm":               "thompson_sampling",
+    "description":             "Beta(α,β) — α=wins+1, β=losses+1 — confiance = α/(α+β)",
+    "min_trades_before_filter": 20,
+    "min_confidence_threshold": 0.35,
+    "conditions_tracked": [
+      "momentum_direction_setup",
+      "symbol_direction",
+      "score_direction",
+      "fib_direction",
+      "news_impact_direction",
+      "day_of_week_direction",
+      "session_direction"
+    ],
+    "insight_every_n_cycles":  10
+  },
+
+  "broker_profiles": {
+    "mock": {
+      "description": "Mode simulation — aucun ordre réel envoyé"
+    },
+    "oanda": {
+      "api_url_live": "https://api-fxtrade.oanda.com",
+      "api_url_demo": "https://api-fxpractice.oanda.com",
+      "required_env": ["BROKER_API_KEY", "BROKER_ACCOUNT_ID"]
+    },
+    "webhook": {
+      "description": "Envoie via webhook_server.py existant (port 5001)",
+      "url": "http://localhost:5001/webhook"
+    }
+  },
+
+  "tradingview_desktop_mcp": {
+    "url":    "http://localhost:3000",
+    "health": "mcp__tradingview-desktop__tv_health_check"
+  },
+
+  "alerts_webhook": {
+    "format": "JSON",
+    "example_payload": {
+      "action":    "BUY",
+      "symbol":    "EURUSD",
+      "exchange":  "OANDA",
+      "tf":        "1H",
+      "setup":     "GOLDEN_SBS",
+      "score":     4,
+      "momentum":  "HCOM",
+      "entry":     1.16000,
+      "sl":        1.15500,
+      "tp1":       1.17000,
+      "tp2":       1.17500,
+      "risk_pct":  1.0,
+      "rr_tp1":    2.0,
+      "rr_tp2":    3.0,
+      "pdh":       1.16200,
+      "pdl":       1.15700,
+      "pdc":       1.16100,
+      "atr":       0.00350,
+      "sma_bias":  "BULL",
+      "d_bias":    "BULL",
+      "timestamp": "2026-06-09T09:00:00Z"
+    }
+  },
+
+  "files": {
+    "pine_strategy":    "pine_scripts/strategies/stoic_lens_strategy.pine",
+    "agents_system":    "agents/stoic_multi_agent_system.py",
+    "agent_config":     "agents/stoic_agent_config.json",
+    "monday_analysis":  "stoic_lens_lundi_9juin_2026.md",
+    "blueprint":        "docs/guides/STOIC_AGENT_BLUEPRINT.md"
+  }
+}

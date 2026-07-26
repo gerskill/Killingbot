@@ -2,12 +2,26 @@
 
 _Mise à jour : 2026-05-14 08:30_
 
-| Rang | Stratégie | %/mois | WR | Trades | Drawdown | Sharpe |
+> ⚠️ **INVALIDÉ — 2026-07-18** : Toutes les entrées de ce tableau proviennent du même sweep
+> automatique de 35 variantes (`agents/strategy_explorer.py`). Le chiffre `[[KB_15m]]`
+> (rang 4 : "+7.9%/mois, DD 5.7%, PF implicite élevé, WR 67%, Sharpe 7.57, 414 trades")
+> a été re-testé en direct sur TradingView (Strategy Tester, BTCUSDT 15m, données réelles
+> disponibles) le 2026-07-18 et s'est révélé **totalement faux** :
+> P&L réel −8.76%, Drawdown 8.98%, **Profit Factor 0.465 (stratégie perdante)**,
+> Win Rate réel 35.23% (204/579 trades), Sharpe **−1.243**, 579 trades (pas 414).
+>
+> Aucune des 9 autres entrées n'a été re-vérifiée. **Ne faites confiance à aucun chiffre
+> de ce fichier tant qu'il n'a pas été recompilé et testé en direct dans le Strategy Tester
+> TradingView** (pas de simulation, pas d'estimation d'agent — le vrai backtest, lu à l'écran).
+> Voir `[[AGENT_LOG]]` pour la méthodologie du sweep d'origine et évaluer si les mêmes
+> biais (période non précisée, absence de vérification live) s'y sont glissés.
+
+| Rang | Stratégie | %/mois (⚠️ non vérifié) | WR | Trades | Drawdown | Sharpe |
 |------|-----------|--------|-----|--------|----------|--------|
 | 1 | [[KB_LOOSE_RR2.5_RR3.0]] | 8.0% | 66% | 231 | -12.2% | 7.06 |
 | 2 | [[KB_1h]] | 7.9% | 67% | 420 | -6.1% | 7.51 |
 | 3 | [[KB_RR4]] | 7.9% | 65% | 214 | -12.2% | 6.43 |
-| 4 | [[KB_15m]] | 7.9% | 67% | 414 | -5.7% | 7.57 |
+| 4 | ~~[[KB_15m]]~~ **SUPPRIMÉ 2026-07-18** — perdant en réel (PF 0.465) | ~~7.9%~~ | ~~67%~~ | ~~414~~ | ~~-5.7%~~ | ~~7.57~~ |
 | 5 | [[KB_RR5]] | 7.8% | 62% | 208 | -14.6% | 5.51 |
 | 6 | [[KB_LOOSE_RR2.5_RR3.0_RSI]] | 7.8% | 68% | 215 | -11.5% | 7.45 |
 | 7 | [[KB_LOOSE_RR2.5_RSI]] | 7.5% | 68% | 225 | -10.4% | 7.65 |

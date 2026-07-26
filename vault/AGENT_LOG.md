@@ -456,3 +456,10 @@ Objectif non atteint. Meilleur : KB_LOOSE_RR2.5_RR3.0 = 8.0%/mois
 ## Rapport final — 2026-05-14 08:30
 Stratégies testées : 35
 Objectif non atteint. Meilleur : KB_LOOSE_RR2.5_RR3.0 = 8.0%/mois
+2026-07-11 20:39 **JournalAgent** — skip : 0 trade sur 7 jours
+2026-07-12 16:21 **JournalAgent** — semaine plate : 2 signaux reçus, 0 bloqués par regime filter, 0 par macro kill switch. 0 trade = 0 perte en marché injouable.
+2026-07-12 16:21 **JournalAgent** — semaine plate : 2 signaux reçus, 0 bloqués par regime filter, 0 par macro kill switch. 0 trade = 0 perte en marché injouable.
+2026-07-12 16:34 **JournalAgent** — semaine plate : 2 signaux reçus, 0 bloqués par regime filter, 0 par macro kill switch. 0 trade = 0 perte en marché injouable.
+2026-07-12 20:00 **JournalAgent** — semaine plate : 3 signaux reçus, 1 bloqués par regime filter, 0 par macro kill switch. 0 trade = 0 perte en marché injouable.
+**StrategyExplorer** — prêt. 33 variations prédéfinies.
+2026-07-25 11:20 **JournalAgent** — skip : 0 signal, 0 trade sur 7 jours

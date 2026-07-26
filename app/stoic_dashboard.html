@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>👑 Stoic Lens — Killingbot Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {
+      colors: {
+        slate: { 850: '#172033', 950: '#0b1120' },
+        stoic: { gold:'#fbbf24', long:'#22c55e', short:'#ef4444', neutral:'#94a3b8' }
+      },
+      fontFamily: { sans: ['Inter','system-ui','sans-serif'], mono: ['JetBrains Mono','monospace'] }
+    }}
+  }
+</script>
+<style>
+  body { background: radial-gradient(ellipse at top, #1e293b 0%, #0b1120 60%); min-height: 100vh; }
+  .glass { background: rgba(15,23,42,0.75); backdrop-filter: blur(8px); border: 1px solid rgba(148,163,184,0.15); }
+  .pillar-on  { background: linear-gradient(135deg,#16a34a,#22c55e); color: white; }
+  .pillar-off { background: rgba(71,85,105,0.35); color: #64748b; }
+  .scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  [x-cloak] { display: none !important; }
+  .tab-active { background: linear-gradient(135deg,#fbbf24,#f59e0b); color: #0b1120; font-weight: 700; }
+</style>
+</head>
+<body class="text-slate-200 font-sans" x-data="stoicApp()" x-init="init()" x-cloak>
+
+<!-- ===================== HEADER ===================== -->
+<header class="glass sticky top-0 z-40 border-b border-slate-700/50">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="text-3xl">👑</div>
+      <div>
+        <h1 class="text-xl font-bold text-white">Stoic Lens — Killingbot</h1>
+        <p class="text-xs text-slate-400 italic">"Cash is a position. No trade is a valid outcome." — @StoicTA</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 text-xs">
+      <span class="px-3 py-1 rounded-full bg-slate-800 text-slate-300" x-text="new Date().toLocaleDateString('fr-FR',{weekday:'long',year:'numeric',month:'long',day:'numeric'})"></span>
+      <span class="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" x-text="reports.length + ' actifs scannés'"></span>
+    </div>
+  </div>
+
+  <!-- TABS -->
+  <nav class="max-w-7xl mx-auto px-6 pb-3 flex gap-2">
+    <button @click="tab='reports'" :class="tab==='reports' ? 'tab-active' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800'" class="px-4 py-2 rounded-lg text-sm transition-all">📊 Rapports Stoic</button>
+    <button @click="tab='checklist'" :class="tab==='checklist' ? 'tab-active' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800'" class="px-4 py-2 rounded-lg text-sm transition-all">✅ Checklist manuelle</button>
+    <button @click="tab='history'" :class="tab==='history' ? 'tab-active' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800'" class="px-4 py-2 rounded-lg text-sm transition-all">📜 Historique auto</button>
+    <button @click="tab='inbox'" :class="tab==='inbox' ? 'tab-active' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800'" class="px-4 py-2 rounded-lg text-sm transition-all">📥 Inbox JSON</button>
+    <button @click="tab='settings'" :class="tab==='settings' ? 'tab-active' : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800'" class="px-4 py-2 rounded-lg text-sm transition-all">⚙️ Réglages</button>
+  </nav>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-6">
+
+<!-- ===================== TAB 1 : RAPPORTS STOIC ===================== -->
+<section x-show="tab==='reports'">
+  <div class="flex justify-between items-center mb-4">
+    <h2 class="text-lg font-semibold text-white">Setups en cours — triés par score décroissant</h2>
+    <div class="flex gap-2">
+      <select x-model="filterDir" class="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm">
+        <option value="all">Tous biais</option>
+        <option value="LONG">Long uniquement</option>
+        <option value="SHORT">Short uniquement</option>
+      </select>
+      <select x-model="filterMin" class="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm">
+        <option value="0">Tous scores</option>
+        <option value="2">≥ 2/4 (Low+)</option>
+        <option value="3">≥ 3/4 (B&R+)</option>
+        <option value="4">= 4/4 (Golden)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <template x-for="r in filteredReports()" :key="r.symbol + r.tf + r.ts">
+      <div class="glass rounded-xl p-5 hover:border-stoic-gold/50 transition-all cursor-pointer" @click="openDetail(r)">
+        <!-- Header card -->
+        <div class="flex justify-between items-start mb-3">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-lg font-bold text-white" x-text="r.symbol"></span>
+              <span class="text-xs px-2 py-0.5 bg-slate-800 rounded text-slate-400" x-text="r.tf"></span>
+            </div>
+            <p class="text-xs text-slate-500 mt-1" x-text="timeAgo(r.ts)"></p>
+          </div>
+          <div :class="r.direction==='LONG' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : r.direction==='SHORT' ? 'bg-red-500/20 text-red-300 border-red-500/30' : 'bg-slate-700/50 text-slate-400 border-slate-600'" class="px-3 py-1 rounded-full text-xs font-bold border" x-text="r.direction"></div>
+        </div>
+
+        <!-- 4 Piliers -->
+        <div class="grid grid-cols-4 gap-2 mb-3">
+          <template x-for="(p, idx) in ['P1','P2','P3','P4']" :key="idx">
+            <div :class="r.pillars[idx] ? 'pillar-on' : 'pillar-off'" class="rounded-lg p-2 text-center text-xs font-mono">
+              <div class="font-bold" x-text="p"></div>
+              <div class="text-[10px] opacity-80" x-text="pillarLabel(idx)"></div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Score & Setup label -->
+        <div class="flex justify-between items-center mb-3">
+          <div class="text-2xl font-bold" :class="scoreColor(r.score)">
+            <span x-text="r.score"></span><span class="text-sm text-slate-500">/4</span>
+          </div>
+          <div class="text-xs px-2 py-1 rounded" :class="setupBgClass(r.score)" x-text="r.setup"></div>
+        </div>
+
+        <!-- Niveaux clés (mini) -->
+        <div class="border-t border-slate-700/50 pt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+          <div class="flex justify-between"><span class="text-slate-500">Prix</span><span class="font-mono text-white" x-text="fmt(r.price)"></span></div>
+          <div class="flex justify-between"><span class="text-slate-500">ATR</span><span class="font-mono text-slate-300" x-text="fmt(r.atr)"></span></div>
+          <div class="flex justify-between"><span class="text-red-400/80">HCOM</span><span class="font-mono" x-text="fmt(r.hcom)"></span></div>
+          <div class="flex justify-between"><span class="text-emerald-400/80">LCOM</span><span class="font-mono" x-text="fmt(r.lcom)"></span></div>
+          <div class="flex justify-between"><span class="text-amber-400/80">PDH</span><span class="font-mono" x-text="fmt(r.pdh)"></span></div>
+          <div class="flex justify-between"><span class="text-sky-400/80">PDL</span><span class="font-mono" x-text="fmt(r.pdl)"></span></div>
+        </div>
+
+        <div class="mt-3 flex gap-2">
+          <button @click.stop="prefillChecklist(r)" class="flex-1 bg-stoic-gold/20 hover:bg-stoic-gold/30 text-stoic-gold text-xs py-2 rounded font-semibold transition-all">📋 Valider en checklist</button>
+        </div>
+      </div>
+    </template>
+
+    <div x-show="filteredReports().length === 0" class="col-span-full glass rounded-xl p-12 text-center">
+      <div class="text-5xl mb-3">🧘</div>
+      <p class="text-slate-400 text-lg">No Edge Zone — aucun setup actif</p>
+      <p class="text-slate-500 text-sm mt-2">Cash est une position. Attends que le marché vienne à toi.</p>
+      <button @click="seedDemo()" class="mt-4 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm">Charger des données démo</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TAB 2 : CHECKLIST MANUELLE ===================== -->
+<section x-show="tab==='checklist'" class="space-y-6">
+
+  <div class="glass rounded-xl p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold text-white">Checklist setup manuel — Protocole Stoïcien</h2>
+      <button @click="resetChecklist()" class="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded">Réinitialiser</button>
+    </div>
+
+    <!-- Asset + Setup info -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Actif</label>
+        <input type="text" x-model="checklist.symbol" placeholder="BTCUSD" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Timeframe</label>
+        <select x-model="checklist.tf" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+          <option>1m</option><option>5m</option><option>15m</option><option>1h</option><option>4h</option><option>D</option><option>W</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Setup</label>
+        <select x-model="checklist.setupType" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+          <option>BnR (Break & Retest)</option>
+          <option>SFP (Swing Failure)</option>
+          <option>SBS Model 1 (shallow)</option>
+          <option>SBS Model 2 (deep)</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Biais</label>
+        <select x-model="checklist.bias" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm">
+          <option>LONG</option><option>SHORT</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 5 Filtres Stoic -->
+    <h3 class="text-sm font-semibold text-stoic-gold mb-3">🔍 Les 5 filtres Stoic Lens</h3>
+    <div class="space-y-2 mb-6">
+      <template x-for="(f, idx) in checklist.filters" :key="idx">
+        <label class="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg hover:bg-slate-800 cursor-pointer">
+          <input type="checkbox" x-model="f.ok" class="mt-1 w-4 h-4 accent-emerald-500">
+          <div class="flex-1">
+            <div class="text-sm font-semibold text-white" x-text="f.title"></div>
+            <div class="text-xs text-slate-400" x-text="f.desc"></div>
+          </div>
+        </label>
+      </template>
+    </div>
+
+    <!-- 4 Piliers -->
+    <h3 class="text-sm font-semibold text-stoic-gold mb-3">🏛️ Scoring 4 piliers</h3>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      <template x-for="(p, idx) in checklist.pillars" :key="idx">
+        <label class="flex items-center gap-2 p-3 rounded-lg cursor-pointer" :class="p.ok ? 'bg-emerald-500/20 border border-emerald-500/40' : 'bg-slate-800/50 border border-slate-700'">
+          <input type="checkbox" x-model="p.ok" class="w-4 h-4 accent-emerald-500">
+          <div>
+            <div class="text-xs font-bold text-white" x-text="p.key"></div>
+            <div class="text-[10px] text-slate-400" x-text="p.label"></div>
+          </div>
+        </label>
+      </template>
+    </div>
+
+    <!-- Risk Management -->
+    <h3 class="text-sm font-semibold text-stoic-gold mb-3">💰 Risk Management</h3>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Entrée</label>
+        <input type="number" step="0.0001" x-model.number="checklist.entry" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm font-mono">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Stop Loss</label>
+        <input type="number" step="0.0001" x-model.number="checklist.stop" class="w-full bg-slate-800 border border-red-500/30 rounded px-3 py-2 text-sm font-mono">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">TP1 (1:2)</label>
+        <input type="number" step="0.0001" x-model.number="checklist.tp1" class="w-full bg-slate-800 border border-emerald-500/30 rounded px-3 py-2 text-sm font-mono">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">TP2 (1:3+)</label>
+        <input type="number" step="0.0001" x-model.number="checklist.tp2" class="w-full bg-slate-800 border border-emerald-500/30 rounded px-3 py-2 text-sm font-mono">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Risque (%)</label>
+        <input type="number" step="0.1" min="0.1" max="2" x-model.number="checklist.risk" class="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm font-mono">
+      </div>
+    </div>
+
+    <!-- Verdict -->
+    <div class="glass rounded-lg p-5 border-2" :class="verdictBorder()">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <div class="text-xs text-slate-400">Verdict Stoïcien</div>
+          <div class="text-2xl font-bold mt-1" :class="verdictColor()" x-text="verdictText()"></div>
+        </div>
+        <div class="flex gap-6 text-sm font-mono">
+          <div><span class="text-slate-400">Score:</span> <span class="text-white font-bold" x-text="pillarsScore() + '/4'"></span></div>
+          <div><span class="text-slate-400">Filtres:</span> <span class="text-white font-bold" x-text="filtersScore() + '/5'"></span></div>
+          <div><span class="text-slate-400">R:R:</span> <span class="text-white font-bold" x-text="rr()"></span></div>
+        </div>
+        <div class="flex gap-2">
+          <button @click="logManualTrade('LIVE')" :disabled="!canLog()" class="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-30 disabled:cursor-not-allowed rounded font-bold text-sm text-slate-900">✅ Logger trade pris</button>
+          <button @click="logManualTrade('SKIPPED')" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded font-bold text-sm">🧘 Logger comme skip</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TAB 3 : HISTORIQUE AUTO ===================== -->
+<section x-show="tab==='history'" class="space-y-6">
+
+  <!-- STATS BAR -->
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+    <div class="glass rounded-lg p-4">
+      <div class="text-xs text-slate-400">Trades total</div>
+      <div class="text-2xl font-bold text-white" x-text="stats().total"></div>
+    </div>
+    <div class="glass rounded-lg p-4">
+      <div class="text-xs text-slate-400">Win Rate</div>
+      <div class="text-2xl font-bold" :class="stats().wr >= 50 ? 'text-emerald-400' : 'text-amber-400'" x-text="stats().wr + '%'"></div>
+    </div>
+    <div class="glass rounded-lg p-4">
+      <div class="text-xs text-slate-400">Profit Factor</div>
+      <div class="text-2xl font-bold" :class="stats().pf >= 1.5 ? 'text-emerald-400' : 'text-amber-400'" x-text="stats().pf"></div>
+    </div>
+    <div class="glass rounded-lg p-4">
+      <div class="text-xs text-slate-400">Net R</div>
+      <div class="text-2xl font-bold" :class="stats().netR >= 0 ? 'text-emerald-400' : 'text-red-400'" x-text="(stats().netR >= 0 ? '+' : '') + stats().netR + 'R'"></div>
+    </div>
+    <div class="glass rounded-lg p-4">
+      <div class="text-xs text-slate-400">Setups skippés</div>
+      <div class="text-2xl font-bold text-slate-300" x-text="stats().skipped"></div>
+    </div>
+  </div>
+
+  <!-- FILTERS -->
+  <div class="glass rounded-xl p-4 flex flex-wrap gap-3 items-center">
+    <select x-model="histFilter.source" class="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm">
+      <option value="all">Toutes sources</option>
+      <option value="auto">Auto (webhook)</option>
+      <option value="manual">Manuel</option>
+    </select>
+    <select x-model="histFilter.outcome" class="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm">
+      <option value="all">Tous résultats</option>
+      <option value="WIN">Wins</option>
+      <option value="LOSS">Losses</option>
+      <option value="BE">Break-even</option>
+      <option value="OPEN">Ouverts</option>
+      <option value="SKIPPED">Skipped</option>
+    </select>
+    <input type="text" x-model="histFilter.symbol" placeholder="Filtrer par actif" class="bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm flex-1 min-w-[150px]">
+    <button @click="exportCSV()" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded text-sm">⬇ Export CSV</button>
+    <button @click="confirmClear()" class="px-3 py-1 bg-red-900/40 hover:bg-red-900/60 text-red-300 rounded text-sm">🗑 Tout effacer</button>
+  </div>
+
+  <!-- TRADES TABLE -->
+  <div class="glass rounded-xl overflow-hidden">
+    <div class="overflow-x-auto scrollbar">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-800/70 text-slate-400 text-xs uppercase">
+          <tr>
+            <th class="text-left px-3 py-2">Date</th>
+            <th class="text-left px-3 py-2">Source</th>
+            <th class="text-left px-3 py-2">Actif</th>
+            <th class="text-left px-3 py-2">TF</th>
+            <th class="text-left px-3 py-2">Direction</th>
+            <th class="text-left px-3 py-2">Setup</th>
+            <th class="text-right px-3 py-2">Score</th>
+            <th class="text-right px-3 py-2">Entrée</th>
+            <th class="text-right px-3 py-2">Stop</th>
+            <th class="text-right px-3 py-2">Target</th>
+            <th class="text-right px-3 py-2">R:R</th>
+            <th class="text-center px-3 py-2">Outcome</th>
+            <th class="text-right px-3 py-2">PnL (R)</th>
+            <th class="text-center px-3 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(t, i) in filteredTrades()" :key="t.id">
+            <tr class="border-t border-slate-800 hover:bg-slate-800/40">
+              <td class="px-3 py-2 text-slate-400 text-xs whitespace-nowrap" x-text="new Date(t.ts).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})"></td>
+              <td class="px-3 py-2">
+                <span :class="t.source==='auto' ? 'bg-sky-500/20 text-sky-300' : 'bg-purple-500/20 text-purple-300'" class="text-[10px] px-2 py-0.5 rounded font-semibold" x-text="t.source.toUpperCase()"></span>
+              </td>
+              <td class="px-3 py-2 font-semibold text-white" x-text="t.symbol"></td>
+              <td class="px-3 py-2 text-slate-400" x-text="t.tf"></td>
+              <td class="px-3 py-2" :class="t.direction==='LONG' ? 'text-emerald-400' : 'text-red-400'" x-text="t.direction"></td>
+              <td class="px-3 py-2 text-slate-300 text-xs" x-text="t.setup"></td>
+              <td class="px-3 py-2 text-right font-mono" :class="scoreColor(t.score)" x-text="t.score + '/4'"></td>
+              <td class="px-3 py-2 text-right font-mono" x-text="fmt(t.entry)"></td>
+              <td class="px-3 py-2 text-right font-mono text-red-300/80" x-text="fmt(t.stop)"></td>
+              <td class="px-3 py-2 text-right font-mono text-emerald-300/80" x-text="fmt(t.target)"></td>
+              <td class="px-3 py-2 text-right font-mono" x-text="t.rr ? '1:' + t.rr : '—'"></td>
+              <td class="px-3 py-2 text-center">
+                <select x-model="t.outcome" @change="persist()" class="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-xs">
+                  <option>OPEN</option><option>WIN</option><option>LOSS</option><option>BE</option><option>SKIPPED</option>
+                </select>
+              </td>
+              <td class="px-3 py-2 text-right font-mono font-bold" :class="t.pnlR > 0 ? 'text-emerald-400' : t.pnlR < 0 ? 'text-red-400' : 'text-slate-400'">
+                <input type="number" step="0.1" x-model.number="t.pnlR" @change="persist()" class="w-16 bg-slate-800 border border-slate-700 rounded px-1 text-right text-xs">
+              </td>
+              <td class="px-3 py-2 text-center">
+                <button @click="deleteTrade(t.id)" class="text-red-400 hover:text-red-300 text-xs">✕</button>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="filteredTrades().length === 0">
+            <td colspan="14" class="text-center py-12 text-slate-500">Aucun trade dans l'historique pour ces filtres.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- CHART R Cumulatif -->
+  <div class="glass rounded-xl p-5">
+    <h3 class="text-sm font-semibold text-stoic-gold mb-3">📈 Courbe R cumulé</h3>
+    <canvas id="equityChart" height="80"></canvas>
+  </div>
+</section>
+
+<!-- ===================== TAB 4 : INBOX JSON ===================== -->
+<section x-show="tab==='inbox'" class="space-y-6">
+  <div class="glass rounded-xl p-6">
+    <h2 class="text-lg font-semibold text-white mb-3">📥 Inbox JSON — alertes Pine</h2>
+    <p class="text-sm text-slate-400 mb-4">Colle ici le payload JSON envoyé par le webhook TradingView. Format compatible avec l'indicateur <code class="bg-slate-800 px-1 rounded">stoic_confluence_indicator.pine</code>.</p>
+
+    <div class="grid md:grid-cols-2 gap-4">
+      <div>
+        <label class="text-xs text-slate-400 block mb-2">JSON brut (un objet ou un tableau)</label>
+        <textarea x-model="rawJson" rows="14" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs font-mono scrollbar" placeholder='{"source":"stoic_confluence","symbol":"BTCUSD","tf":"4H",...}'></textarea>
+        <div class="flex gap-2 mt-3">
+          <button @click="ingestJson()" class="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded text-sm">📥 Ingérer</button>
+          <button @click="rawJson = exampleJson" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm">Exemple</button>
+          <button @click="rawJson = ''" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm">Vider</button>
+        </div>
+        <div x-show="ingestMsg" class="mt-3 text-sm" :class="ingestOk ? 'text-emerald-400' : 'text-red-400'" x-text="ingestMsg"></div>
+      </div>
+
+      <div>
+        <label class="text-xs text-slate-400 block mb-2">Schéma attendu</label>
+        <pre class="bg-slate-900 border border-slate-700 rounded p-3 text-xs font-mono text-slate-300 scrollbar overflow-auto">{
+  "source": "stoic_confluence",
+  "symbol": "BTCUSD",
+  "tf": "4H",
+  "direction": "LONG" | "SHORT",
+  "score": 0..4,
+  "setup": "GOLDEN SBS ⭐⭐⭐" | "B&R Standard ⭐⭐" | "Low Priority ⭐" | "NO EDGE ❌",
+  "price": number,
+  "hcom": number,  "lcom": number,
+  "pdh":  number,  "pdl":  number,  "pdc": number,
+  "atr":  number,
+  "p1": boolean, "p2": boolean,
+  "p3": boolean, "p4": boolean,
+  "ts": number  // unix ms
+}</pre>
+
+        <div class="mt-4 glass rounded-lg p-3 bg-amber-500/5 border-amber-500/20">
+          <p class="text-xs text-amber-300 font-semibold mb-1">🔗 Webhook URL (pour TradingView)</p>
+          <p class="text-xs text-slate-400">Pointe ton alerte vers ton serveur webhook Killingbot — <code class="bg-slate-800 px-1 rounded">webhook_server.py</code> (port 5001). Le serveur peut router vers ce dashboard via fichier JSON partagé.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== TAB 5 : SETTINGS ===================== -->
+<section x-show="tab==='settings'" class="space-y-4">
+  <div class="glass rounded-xl p-6">
+    <h2 class="text-lg font-semibold text-white mb-4">⚙️ Réglages</h2>
+    <div class="space-y-4">
+      <div>
+        <label class="text-sm font-semibold text-white block mb-1">Stockage local</label>
+        <p class="text-xs text-slate-400 mb-2">Toutes les données sont stockées dans le localStorage de ton navigateur. Backup régulier conseillé.</p>
+        <div class="flex gap-2">
+          <button @click="exportAll()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm">💾 Export complet (JSON)</button>
+          <label class="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm cursor-pointer">
+            📤 Importer
+            <input type="file" accept=".json" @change="importAll($event)" class="hidden">
+          </label>
+        </div>
+      </div>
+
+      <div class="border-t border-slate-700 pt-4">
+        <label class="text-sm font-semibold text-white block mb-1">À propos</label>
+        <p class="text-xs text-slate-400">Stoic Lens Dashboard v1.0 — Killingbot — basé sur le protocole <em>@StoicTA</em>. Indicateur Pine v6 source : <code>pine_scripts/indicators/stoic_confluence_indicator.pine</code></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ===================== MODALE DETAIL ===================== -->
+<div x-show="detail" @click.self="detail=null" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" x-transition.opacity>
+  <div class="glass rounded-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto scrollbar">
+    <div class="flex justify-between items-start mb-4">
+      <div>
+        <h3 class="text-xl font-bold text-white" x-text="detail?.symbol + ' · ' + detail?.tf"></h3>
+        <p class="text-xs text-slate-400" x-text="'Capturé ' + (detail ? timeAgo(detail.ts) : '')"></p>
+      </div>
+      <button @click="detail=null" class="text-slate-400 hover:text-white text-2xl">×</button>
+    </div>
+    <template x-if="detail">
+      <div class="space-y-3">
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div><span class="text-slate-400">Direction:</span> <span class="font-bold" :class="detail.direction==='LONG' ? 'text-emerald-400' : 'text-red-400'" x-text="detail.direction"></span></div>
+          <div><span class="text-slate-400">Score:</span> <span class="font-bold" x-text="detail.score + '/4'"></span></div>
+          <div class="col-span-2"><span class="text-slate-400">Setup:</span> <span class="font-bold text-stoic-gold" x-text="detail.setup"></span></div>
+        </div>
+        <div class="border-t border-slate-700 pt-3">
+          <h4 class="text-xs font-semibold text-stoic-gold mb-2">Niveaux Stoic Edge</h4>
+          <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs font-mono">
+            <div class="flex justify-between"><span class="text-slate-400">HCOM</span><span x-text="fmt(detail.hcom)"></span></div>
+            <div class="flex justify-between"><span class="text-slate-400">LCOM</span><span x-text="fmt(detail.lcom)"></span></div>
+            <div class="flex justify-between"><span class="text-slate-400">PDH</span><span x-text="fmt(detail.pdh)"></span></div>
+            <div class="flex justify-between"><span class="text-slate-400">PDL</span><span x-text="fmt(detail.pdl)"></span></div>
+            <div class="flex justify-between"><span class="text-slate-400">PDC</span><span x-text="fmt(detail.pdc)"></span></div>
+            <div class="flex justify-between"><span class="text-slate-400">ATR</span><span x-text="fmt(detail.atr)"></span></div>
+            <div class="flex justify-between"><span class="text-slate-400">Prix actuel</span><span class="text-white" x-text="fmt(detail.price)"></span></div>
+          </div>
+        </div>
+        <div class="border-t border-slate-700 pt-3">
+          <h4 class="text-xs font-semibold text-stoic-gold mb-2">4 Piliers</h4>
+          <div class="space-y-1 text-xs">
+            <div><span x-text="detail.pillars[0] ? '✅' : '❌'"></span> <strong>P1 Monthly Extreme</strong> — Prix near HCOM/LCOM ?</div>
+            <div><span x-text="detail.pillars[1] ? '✅' : '❌'"></span> <strong>P2 SMA Bias</strong> — SMA20/200 alignées ?</div>
+            <div><span x-text="detail.pillars[2] ? '✅' : '❌'"></span> <strong>P3 Daily Level</strong> — Prix near PDH/PDL ?</div>
+            <div><span x-text="detail.pillars[3] ? '✅' : '❌'"></span> <strong>P4 Fib Zone</strong> — Retracement 50-61.8% ?</div>
+          </div>
+        </div>
+        <div class="flex gap-2 pt-3">
+          <button @click="prefillChecklist(detail); detail=null" class="flex-1 bg-stoic-gold/20 hover:bg-stoic-gold/30 text-stoic-gold py-2 rounded text-sm font-semibold">📋 Pré-remplir checklist</button>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+<!-- ===================== ALPINE STATE ===================== -->
+<script>
+function stoicApp(){
+  return {
+    tab: 'reports',
+    reports: [],
+    trades: [],
+    detail: null,
+    filterDir: 'all',
+    filterMin: '0',
+    histFilter: { source:'all', outcome:'all', symbol:'' },
+    rawJson: '',
+    ingestMsg: '',
+    ingestOk: false,
+    equityChart: null,
+
+    exampleJson: JSON.stringify({
+      source: "stoic_confluence",
+      symbol: "BTCUSD",
+      tf: "4H",
+      direction: "LONG",
+      score: 4,
+      setup: "GOLDEN SBS ⭐⭐⭐",
+      price: 67250.5,
+      hcom: 71200,
+      lcom: 64800,
+      pdh: 68100,
+      pdl: 66400,
+      pdc: 67000,
+      atr: 850,
+      p1: true, p2: true, p3: true, p4: true,
+      ts: Date.now()
+    }, null, 2),
+
+    checklist: this.blankChecklist(),
+
+    blankChecklist(){
+      return {
+        symbol: '', tf: '4h', setupType: 'BnR (Break & Retest)', bias: 'LONG',
+        filters: [
+          { title: '1. HTF Context clair',     desc: 'Trend/Range identifié, près d\'un extrême meaningful', ok: false },
+          { title: '2. Trapped Trader identifié', desc: 'Side vulnérable + zone de stops repérée', ok: false },
+          { title: '3. Patience — niveau touché', desc: 'Le prix EST au territory qui compte', ok: false },
+          { title: '4. Process — invalidation claire', desc: 'Stop, entrée, target définis AVANT entrée', ok: false },
+          { title: '5. Professional Restraint', desc: '"Should I play this?" > "Can I trade this?"', ok: false }
+        ],
+        pillars: [
+          { key:'P1', label:'Monthly Extreme', ok:false },
+          { key:'P2', label:'SMA Bias',        ok:false },
+          { key:'P3', label:'Daily Level',     ok:false },
+          { key:'P4', label:'Fib 50-61.8%',    ok:false }
+        ],
+        entry: null, stop: null, tp1: null, tp2: null, risk: 1.0
+      }
+    },
+
+    init(){
+      this.loadState();
+      this.$watch('tab', t => { if (t === 'history') this.$nextTick(() => this.renderEquity()); });
+      this.$watch('trades', () => { if (this.tab === 'history') this.$nextTick(() => this.renderEquity()); }, { deep: true });
+    },
+
+    loadState(){
+      try {
+        this.reports = JSON.parse(localStorage.getItem('stoic_reports') || '[]');
+        this.trades  = JSON.parse(localStorage.getItem('stoic_trades')  || '[]');
+      } catch(e) { console.error(e); }
+    },
+
+    persist(){
+      localStorage.setItem('stoic_reports', JSON.stringify(this.reports));
+      localStorage.setItem('stoic_trades',  JSON.stringify(this.trades));
+    },
+
+    // ======= FORMATTING =======
+    fmt(v){ return v == null || isNaN(v) ? '—' : Number(v).toLocaleString('en-US',{maximumFractionDigits:4}); },
+    timeAgo(ts){
+      const d = (Date.now() - ts) / 1000;
+      if (d < 60) return 'il y a ' + Math.floor(d) + 's';
+      if (d < 3600) return 'il y a ' + Math.floor(d/60) + 'min';
+      if (d < 86400) return 'il y a ' + Math.floor(d/3600) + 'h';
+      return 'il y a ' + Math.floor(d/86400) + 'j';
+    },
+    scoreColor(s){ return s >= 4 ? 'text-amber-400' : s >= 3 ? 'text-emerald-400' : s >= 2 ? 'text-slate-300' : 'text-slate-500'; },
+    setupBgClass(s){ return s >= 4 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : s >= 3 ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : s >= 2 ? 'bg-slate-700/30 text-slate-300' : 'bg-slate-800/50 text-slate-500'; },
+    pillarLabel(i){ return ['Monthly','SMA','Daily','Fib'][i]; },
+
+    // ======= REPORTS =======
+    filteredReports(){
+      return this.reports
+        .filter(r => this.filterDir === 'all' || r.direction === this.filterDir)
+        .filter(r => r.score >= Number(this.filterMin))
+        .sort((a,b) => b.score - a.score || b.ts - a.ts);
+    },
+    openDetail(r){ this.detail = r; },
+
+    seedDemo(){
+      const now = Date.now();
+      this.reports = [
+        { symbol:'BTCUSD',  tf:'4H',  direction:'LONG',  score:4, setup:'GOLDEN SBS ⭐⭐⭐', price:67250, hcom:71200, lcom:64800, pdh:68100, pdl:66400, pdc:67000, atr:850, pillars:[true,true,true,true],  ts: now - 5*60*1000 },
+        { symbol:'XAUUSD',  tf:'1H',  direction:'SHORT', score:3, setup:'B&R Standard ⭐⭐',  price:2380, hcom:2410, lcom:2305, pdh:2395, pdl:2370, pdc:2378, atr:8,    pillars:[true,true,true,false], ts: now - 45*60*1000 },
+        { symbol:'ETHUSD',  tf:'Daily',direction:'LONG', score:2, setup:'Low Priority ⭐',  price:3540, hcom:3820, lcom:3120, pdh:3580, pdl:3490, pdc:3520, atr:120,  pillars:[true,false,true,false], ts: now - 2*3600*1000 },
+        { symbol:'NQ1!',    tf:'15m', direction:'SHORT', score:4, setup:'GOLDEN SBS ⭐⭐⭐', price:20850, hcom:21200, lcom:19800, pdh:20920, pdl:20710, pdc:20860, atr:75, pillars:[true,true,true,true],  ts: now - 12*60*1000 },
+        { symbol:'EURUSD',  tf:'1H',  direction:'NEUTRE',score:1, setup:'NO EDGE ❌',       price:1.0832, hcom:1.0890, lcom:1.0750, pdh:1.0851, pdl:1.0820, pdc:1.0838, atr:0.0025, pillars:[false,false,true,false], ts: now - 30*60*1000 },
+        { symbol:'SOLUSD',  tf:'Daily',direction:'LONG', score:3, setup:'B&R Standard ⭐⭐',  price:162.5, hcom:188, lcom:142, pdh:165, pdl:158, pdc:160, atr:8.5, pillars:[true,true,false,true], ts: now - 6*3600*1000 }
+      ];
+      this.persist();
+    },
+
+    // ======= CHECKLIST =======
+    pillarsScore(){ return this.checklist.pillars.filter(p => p.ok).length; },
+    filtersScore(){ return this.checklist.filters.filter(f => f.ok).length; },
+    rr(){
+      const e = this.checklist.entry, s = this.checklist.stop, t = this.checklist.tp1;
+      if (!e || !s || !t) return '—';
+      const risk = Math.abs(e - s), reward = Math.abs(t - e);
+      if (risk === 0) return '—';
+      return (reward/risk).toFixed(2);
+    },
+    canLog(){
+      return this.checklist.symbol && this.checklist.entry && this.checklist.stop && this.checklist.tp1;
+    },
+    verdictText(){
+      const ps = this.pillarsScore(), fs = this.filtersScore(), rr = parseFloat(this.rr());
+      if (fs < 5) return '❌ NO TRADE — filtres incomplets';
+      if (ps < 3) return '❌ NO EDGE — score < 3/4';
+      if (isNaN(rr) || rr < 1.5) return '❌ R:R insuffisant (< 1.5)';
+      if (ps === 4 && rr >= 2) return '⭐⭐⭐ GOLDEN — Execute';
+      return '✅ VALID — Execute (1% max)';
+    },
+    verdictColor(){
+      const t = this.verdictText();
+      if (t.startsWith('❌')) return 'text-red-400';
+      if (t.startsWith('⭐⭐⭐')) return 'text-amber-400';
+      return 'text-emerald-400';
+    },
+    verdictBorder(){
+      const t = this.verdictText();
+      if (t.startsWith('❌')) return 'border-red-500/40';
+      if (t.startsWith('⭐⭐⭐')) return 'border-amber-500/60';
+      return 'border-emerald-500/40';
+    },
+
+    resetChecklist(){ this.checklist = this.blankChecklist(); },
+
+    prefillChecklist(r){
+      this.checklist = this.blankChecklist();
+      this.checklist.symbol = r.symbol;
+      this.checklist.tf = r.tf;
+      this.checklist.bias = r.direction;
+      this.checklist.pillars.forEach((p, i) => p.ok = !!r.pillars[i]);
+      this.checklist.entry = r.price;
+      const dist = r.atr * 1.5;
+      if (r.direction === 'LONG') {
+        this.checklist.stop = +(r.price - dist).toFixed(4);
+        this.checklist.tp1  = +(r.price + dist * 2).toFixed(4);
+        this.checklist.tp2  = +(r.price + dist * 3).toFixed(4);
+      } else {
+        this.checklist.stop = +(r.price + dist).toFixed(4);
+        this.checklist.tp1  = +(r.price - dist * 2).toFixed(4);
+        this.checklist.tp2  = +(r.price - dist * 3).toFixed(4);
+      }
+      this.tab = 'checklist';
+    },
+
+    logManualTrade(outcome){
+      if (outcome === 'LIVE' && !this.canLog()) return;
+      const ps = this.pillarsScore();
+      this.trades.unshift({
+        id: 'm_' + Date.now(),
+        source: 'manual',
+        ts: Date.now(),
+        symbol: this.checklist.symbol || '?',
+        tf: this.checklist.tf,
+        direction: this.checklist.bias,
+        setup: this.checklist.setupType,
+        score: ps,
+        entry: this.checklist.entry,
+        stop: this.checklist.stop,
+        target: this.checklist.tp1,
+        rr: parseFloat(this.rr()) || null,
+        outcome: outcome === 'SKIPPED' ? 'SKIPPED' : 'OPEN',
+        pnlR: 0,
+        risk: this.checklist.risk
+      });
+      this.persist();
+      this.resetChecklist();
+      this.tab = 'history';
+    },
+
+    // ======= INBOX =======
+    ingestJson(){
+      this.ingestMsg = '';
+      try {
+        const raw = JSON.parse(this.rawJson);
+        const arr = Array.isArray(raw) ? raw : [raw];
+        let added = 0, logged = 0;
+        for (const o of arr) {
+          if (o.source !== 'stoic_confluence') continue;
+          const report = {
+            symbol: o.symbol, tf: o.tf, direction: o.direction, score: o.score, setup: o.setup,
+            price: o.price, hcom: o.hcom, lcom: o.lcom, pdh: o.pdh, pdl: o.pdl, pdc: o.pdc, atr: o.atr,
+            pillars: [!!o.p1, !!o.p2, !!o.p3, !!o.p4],
+            ts: o.ts || Date.now()
+          };
+          // dédup par symbol+tf+ts proche
+          this.reports = this.reports.filter(r => !(r.symbol === report.symbol && r.tf === report.tf && Math.abs(r.ts - report.ts) < 60000));
+          this.reports.unshift(report);
+          added++;
+          if (report.score >= 3) {
+            this.trades.unshift({
+              id: 'a_' + Date.now() + '_' + logged,
+              source: 'auto', ts: report.ts,
+              symbol: report.symbol, tf: report.tf, direction: report.direction,
+              setup: report.setup, score: report.score,
+              entry: report.price,
+              stop: report.direction === 'LONG' ? +(report.price - report.atr * 1.5).toFixed(4) : +(report.price + report.atr * 1.5).toFixed(4),
+              target: report.direction === 'LONG' ? +(report.price + report.atr * 3).toFixed(4) : +(report.price - report.atr * 3).toFixed(4),
+              rr: 2.0, outcome: 'OPEN', pnlR: 0
+            });
+            logged++;
+          }
+        }
+        this.persist();
+        this.ingestOk = true;
+        this.ingestMsg = `✅ ${added} rapport(s) ingéré(s) · ${logged} trade(s) auto loggé(s) (score ≥ 3).`;
+      } catch(e){
+        this.ingestOk = false;
+        this.ingestMsg = '❌ JSON invalide : ' + e.message;
+      }
+    },
+
+    // ======= HISTORY =======
+    filteredTrades(){
+      return this.trades
+        .filter(t => this.histFilter.source === 'all' || t.source === this.histFilter.source)
+        .filter(t => this.histFilter.outcome === 'all' || t.outcome === this.histFilter.outcome)
+        .filter(t => !this.histFilter.symbol || t.symbol.toLowerCase().includes(this.histFilter.symbol.toLowerCase()));
+    },
+    stats(){
+      const t = this.trades.filter(x => x.outcome !== 'SKIPPED' && x.outcome !== 'OPEN');
+      const wins = t.filter(x => x.outcome === 'WIN');
+      const losses = t.filter(x => x.outcome === 'LOSS');
+      const netR = t.reduce((s,x) => s + (x.pnlR || 0), 0);
+      const grossWin = wins.reduce((s,x) => s + (x.pnlR || 0), 0);
+      const grossLoss = Math.abs(losses.reduce((s,x) => s + (x.pnlR || 0), 0));
+      return {
+        total: this.trades.length,
+        wr: t.length ? Math.round(wins.length / t.length * 100) : 0,
+        pf: grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : '—',
+        netR: netR.toFixed(1),
+        skipped: this.trades.filter(x => x.outcome === 'SKIPPED').length
+      };
+    },
+    deleteTrade(id){ this.trades = this.trades.filter(t => t.id !== id); this.persist(); },
+    confirmClear(){
+      if (confirm('Tout effacer (rapports + trades) ? Action irréversible.')) {
+        this.reports = []; this.trades = []; this.persist();
+      }
+    },
+    exportCSV(){
+      const rows = [['date','source','symbol','tf','direction','setup','score','entry','stop','target','rr','outcome','pnlR']];
+      this.trades.forEach(t => rows.push([
+        new Date(t.ts).toISOString(), t.source, t.symbol, t.tf, t.direction, t.setup, t.score,
+        t.entry, t.stop, t.target, t.rr, t.outcome, t.pnlR
+      ]));
+      const csv = rows.map(r => r.map(c => '"' + (c ?? '') + '"').join(',')).join('\n');
+      const url = URL.createObjectURL(new Blob([csv], { type:'text/csv' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'stoic_trades_' + Date.now() + '.csv'; a.click();
+      URL.revokeObjectURL(url);
+    },
+    exportAll(){
+      const data = { reports: this.reports, trades: this.trades, exportedAt: new Date().toISOString() };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type:'application/json' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'stoic_backup_' + Date.now() + '.json'; a.click();
+      URL.revokeObjectURL(url);
+    },
+    importAll(ev){
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const d = JSON.parse(e.target.result);
+          if (Array.isArray(d.reports)) this.reports = d.reports;
+          if (Array.isArray(d.trades))  this.trades = d.trades;
+          this.persist();
+          alert('Import OK');
+        } catch(err) { alert('Erreur import : ' + err.message); }
+      };
+      reader.readAsText(file);
+    },
+
+    renderEquity(){
+      const ctx = document.getElementById('equityChart');
+      if (!ctx) return;
+      const sorted = [...this.trades]
+        .filter(t => t.outcome === 'WIN' || t.outcome === 'LOSS' || t.outcome === 'BE')
+        .sort((a,b) => a.ts - b.ts);
+      let cum = 0;
+      const labels = [], data = [];
+      sorted.forEach(t => { cum += (t.pnlR || 0); labels.push(new Date(t.ts).toLocaleDateString('fr-FR')); data.push(cum.toFixed(2)); });
+      if (this.equityChart) this.equityChart.destroy();
+      this.equityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'R cumulé',
+            data,
+            borderColor: '#fbbf24',
+            backgroundColor: 'rgba(251,191,36,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 3,
+            pointBackgroundColor: ctx => (data[ctx.dataIndex] >= 0 ? '#22c55e' : '#ef4444')
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { labels: { color: '#cbd5e1' }}},
+          scales: {
+            x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.08)' }},
+            y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.08)' }}
+          }
+        }
+      });
+    }
+  }
+}
+</script>
+
+</body>
+</html>

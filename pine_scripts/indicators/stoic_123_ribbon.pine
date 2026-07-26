@@ -1,0 +1,123 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// STOIC 1-2-3 RIBBON — réplique du système visuel de @StoicTA
+// ───────────────────────────────────────────────────────────────────────────
+// Reproduit ce que StoicTA affiche réellement sur ses charts :
+//   • Ruban SMA 10/20 (band, change de couleur selon la tendance)
+//   • SMA 50 (ligne olive)
+//   • SMA 200 (ligne rouille)
+//   • Séquence 1-2-3 : 1 break de structure → 2 pullback au ruban → 3 continuation
+// Multi-TF (auto) : le map TF s'adapte au TF du chart selon la table 1-2-3
+//   chart ≤ 5m → map 60m · chart ≤ 60m → map Daily · chart > 60m → map Weekly
+// 2 thèmes : "StoicTA clair" (crème, ses couleurs exactes) / "Dark adapté".
+// Couleurs mesurées au pixel sur son chart :
+//   bull #b0c080 · bear #f0c090 · ruban tan #e0d0a0 · SMA50 #707048 · SMA200 #b06830
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("STOIC 1-2-3 RIBBON", overlay = true, max_bars_back = 500)
+
+// ── Thème ───────────────────────────────────────────────────────────────────
+gT = "Theme"
+theme = input.string("StoicTA clair", "Theme", options = ["StoicTA clair", "Dark adapte"], group = gT)
+bool dark = theme == "Dark adapte"
+
+// Couleurs — clair = valeurs exactes de son chart ; dark = mêmes teintes réhaussées
+color cRibbonBull = dark ? #7fa650 : #b0c080
+color cRibbonBear = dark ? #c98f5a : #e0d0a0
+color cSMA50      = dark ? #9fae66 : #707048
+color cSMA200     = dark ? #d6752e : #b06830
+color cLevel      = dark ? #d6752e : #b06830
+color cUp         = dark ? #7fa650 : #6f8f3f
+color cDown       = dark ? #d67a4a : #c07030
+
+// ── Réglages ────────────────────────────────────────────────────────────────
+gS = "SMA (systeme StoicTA)"
+len1  = input.int(10,  "Ruban court",  minval=2, group=gS)
+len2  = input.int(20,  "Ruban long",   minval=2, group=gS)
+len50 = input.int(50,  "SMA 50",       minval=5, group=gS)
+len200= input.int(200, "SMA 200",      minval=20, group=gS)
+
+g123 = "Sequence 1-2-3"
+autoMap   = input.bool(true, "Map TF auto (selon TF du chart)", group=g123)
+mapManual = input.timeframe("D", "Map TF (si auto off)", group=g123)
+pbBars    = input.int(6, "Fenetre pullback au ruban (barres)", minval=2, maxval=20, group=g123)
+brkLook   = input.int(5, "Structure a casser (barres)", minval=2, group=g123)
+needHTF   = input.bool(true, "Exiger accord du map TF (Golden)", group=g123)
+
+// ── SMA système StoicTA (sur TF du chart) ───────────────────────────────────
+s10  = ta.sma(close, len1)
+s20  = ta.sma(close, len2)
+s50  = ta.sma(close, len50)
+s200 = ta.sma(close, len200)
+
+bool ribbonBull = s10 > s20
+bool upTrend    = s50 > s200 and close > s200
+bool downTrend  = s50 < s200 and close < s200
+
+// ── Map TF auto (point 3 : prend en compte le TF supérieur) ─────────────────
+int cs = timeframe.in_seconds()
+string mapTF = not autoMap ? mapManual : cs <= 300 ? "60" : cs <= 3600 ? "D" : "W"
+
+mapTrend() =>
+    float m50  = ta.sma(close, len50)
+    float m200 = ta.sma(close, len200)
+    m50 > m200 and close > m200 ? 1 : m50 < m200 and close < m200 ? -1 : 0
+int mapDir = request.security(syminfo.tickerid, mapTF, mapTrend(), lookahead = barmerge.lookahead_off)
+bool htfUp   = mapDir ==  1
+bool htfDown = mapDir == -1
+
+// ── Séquence 1-2-3 ──────────────────────────────────────────────────────────
+// 1 · structure : dernier plus-haut / plus-bas récent (le niveau à casser)
+float hiN = ta.highest(high, brkLook)[1]
+float loN = ta.lowest(low,  brkLook)[1]
+// 2 · pullback : le prix est venu toucher le ruban 10/20 dans la fenêtre récente
+bool taggedRibbonLong  = ta.lowest(low,  pbBars) <= s20
+bool taggedRibbonShort = ta.highest(high, pbBars) >= s20
+// 3 · continuation : clôture qui reprend au-dessus/dessous + casse de structure
+bool contLong  = close > hiN and close > s10 and close > open
+bool contShort = close < loN and close < s10 and close < open
+
+bool sigLong  = upTrend   and taggedRibbonLong  and contLong
+bool sigShort = downTrend and taggedRibbonShort and contShort
+
+bool goldenLong  = sigLong  and (not needHTF or htfUp)
+bool goldenShort = sigShort and (not needHTF or htfDown)
+bool stdLong     = sigLong  and not goldenLong
+bool stdShort    = sigShort and not goldenShort
+
+// ── Plots — ruban + SMA ─────────────────────────────────────────────────────
+p10 = plot(s10, "SMA 10", color = color.new(ribbonBull ? cRibbonBull : cRibbonBear, 100))
+p20 = plot(s20, "SMA 20", color = color.new(ribbonBull ? cRibbonBull : cRibbonBear, 100))
+fill(p10, p20, color = color.new(ribbonBull ? cRibbonBull : cRibbonBear, dark ? 78 : 55), title = "Ruban 10/20")
+plot(s50,  "SMA 50",  color = cSMA50,  linewidth = 2)
+plot(s200, "SMA 200", color = cSMA200, linewidth = 2)
+
+// niveau de structure actif (le "1")
+plot(upTrend ? hiN : downTrend ? loN : na, "Niveau 1-2-3", color = color.new(cLevel, 20), style = plot.style_linebr, linewidth = 1)
+
+// ── Barres colorées façon StoicTA (optionnel) ───────────────────────────────
+useBarcol = input.bool(true, "Colorer les bougies (bull/bear StoicTA)", group=gS)
+barcolor(useBarcol ? (close >= open ? cRibbonBull : cRibbonBear) : na)
+
+// ── Signaux 1-2-3 ───────────────────────────────────────────────────────────
+plotshape(goldenLong,  "Golden Long",  shape.labelup,   location.belowbar, cUp,   text="3", textcolor=color.white, size=size.small)
+plotshape(stdLong,     "Long",         shape.triangleup, location.belowbar, cUp,   size=size.tiny)
+plotshape(goldenShort, "Golden Short", shape.labeldown, location.abovebar, cDown, text="3", textcolor=color.white, size=size.small)
+plotshape(stdShort,    "Short",        shape.triangledown, location.abovebar, cDown, size=size.tiny)
+
+// ── Table ───────────────────────────────────────────────────────────────────
+var table tbl = table.new(position.top_right, 2, 5, border_width = 1)
+if barstate.islast
+    string bias = upTrend ? "HAUSSIER" : downTrend ? "BAISSIER" : "NEUTRE"
+    table.cell(tbl, 0, 0, "STOIC 1-2-3", text_color = color.white, bgcolor = color.new(color.black, 15))
+    table.cell(tbl, 1, 0, bias, text_color = color.white, bgcolor = upTrend ? color.new(cUp, 20) : downTrend ? color.new(cDown, 20) : color.new(color.gray, 30))
+    table.cell(tbl, 0, 1, "Chart / Map")
+    table.cell(tbl, 1, 1, timeframe.period + " / " + mapTF)
+    table.cell(tbl, 0, 2, "Ruban 10/20")
+    table.cell(tbl, 1, 2, ribbonBull ? "bull" : "bear")
+    table.cell(tbl, 0, 3, "Map TF trend")
+    table.cell(tbl, 1, 3, htfUp ? "HAUSSIER" : htfDown ? "BAISSIER" : "NEUTRE")
+    table.cell(tbl, 0, 4, "Etat 1-2-3")
+    table.cell(tbl, 1, 4, (upTrend and taggedRibbonLong) or (downTrend and taggedRibbonShort) ? "pullback -> attend 3" : "pas de setup")
+
+alertcondition(goldenLong or stdLong,   "Stoic 1-2-3 Long",  "STOIC 1-2-3 LONG")
+alertcondition(goldenShort or stdShort, "Stoic 1-2-3 Short", "STOIC 1-2-3 SHORT")

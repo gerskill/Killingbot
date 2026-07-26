@@ -1,0 +1,53 @@
+//@version=6
+// ZCT Momentum Filter — by KoroushAK (@KoroushAK)
+// Source: https://x.com/KoroushAK/status/2047994305563046039
+//
+// Plots Open Interest (OI) with two EMAs and a colored fill.
+// Green fill  → EMA fast above slow  → bullish OI momentum (Breakout)
+// Red fill    → EMA fast below slow  → bearish OI momentum (Breakdown)
+// Rapid flips → choppy OI           → Reversal / Range — don't chase
+
+indicator("ZCT Momentum Filter", shorttitle="ZCT MF", overlay=false)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+ema_fast_len = input.int(60,  "Fast EMA Length", minval=1,  group="EMA Settings")
+ema_slow_len = input.int(240, "Slow EMA Length", minval=1,  group="EMA Settings")
+
+// OI symbol: auto-builds as EXCHANGE:TICKEROI — override if needed
+// e.g. for BINANCE:BTCUSDT try "BINANCE:BTCUSDTOI"
+//      for BINANCE:BTCUSDT.P try "BINANCE:BTCUSDT.POI"
+// If your exchange doesn't carry OI, point directly to BINANCE:BTCUSDT.P
+oi_override = input.symbol("", "OI Symbol Override (blank = auto)", group="Data")
+
+// ─── OPEN INTEREST DATA ───────────────────────────────────────────────────────
+auto_oi_sym = syminfo.prefix + ":" + syminfo.ticker + "OI"
+oi_sym      = str.length(oi_override) > 0 ? oi_override : auto_oi_sym
+
+oi = request.security(oi_sym, timeframe.period, close, ignore_invalid_symbol=true)
+
+// ─── COMPUTATIONS ─────────────────────────────────────────────────────────────
+ema_fast = ta.ema(oi, ema_fast_len)
+ema_slow = ta.ema(oi, ema_slow_len)
+
+bull = ema_fast > ema_slow
+
+// ─── PLOTS ────────────────────────────────────────────────────────────────────
+p_oi   = plot(oi,       "OI",       color=color.yellow,       linewidth=1, style=plot.style_line)
+p_fast = plot(ema_fast, "EMA Fast", color=color.new(color.blue, 0),  linewidth=2)
+p_slow = plot(ema_slow, "EMA Slow", color=color.new(color.green, 0), linewidth=2)
+
+// Green 85% when fast > slow · Red 85% when fast < slow
+fill(p_fast, p_slow,
+     color = bull
+             ? color.new(color.green, 85)
+             : color.new(color.red,   85),
+     title = "EMA Gap Fill")
+
+// Orange background when OI data missing — check your symbol
+bgcolor(na(oi) ? color.new(color.orange, 88) : na,
+        title  = "No OI Data Warning")
+
+// ─── SIGNAL LEGEND (via labels on last bar) ───────────────────────────────────
+// BREAKOUT    : OI expanding, solid green fill, gradual staircase up
+// BREAKDOWN   : OI contracting, solid red fill, gradual drain
+// REVERSAL    : fill flipping rapidly → no bias, mean-revert inside range

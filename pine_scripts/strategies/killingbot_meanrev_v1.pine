@@ -1,0 +1,250 @@
+//@version=6
+// =============================================================================
+//  KILLINGBOT MEAN REVERSION V1
+//  Cibles : 10%/mois, DD <15%, WR ≥57%, 2-3 trades/semaine
+//
+//  Philosophie : MEAN REVERSION en intraday
+//    Les marchés crypto ont une forte tendance à revenir à la moyenne
+//    après extension. WR naturellement haut (52-65%).
+//
+//  STACK :
+//    C1 OUTLOOK    : EMA200 macro (trade dans le sens du trend long)
+//    C2 SIGNAL     : Bollinger Bands extrême + RSI extrême
+//    C3 STRUCTURE  : VWAP daily (anchor mean)
+//    C4 FILTRE     : ATR ratio (volatility regime), Volume confirmation
+//    C5 CONFLUENCE : MACD direction OK, RSI divergence OK
+//    C6 RISK       : Stop fixe ATR×2 hors BB, Target retour VWAP (mean), TP partiel
+//    C7 EXEC       : Long sur lower band rejection, Short sur upper band rejection
+//
+//  Le secret : RSI extrême PUIS reverse + BB touch = trapped late entries
+//             Mean reversion strategy → WR mécaniquement plus haut que trend-following
+// =============================================================================
+
+strategy(
+     title              = "Killingbot Mean Reversion V1",
+     shorttitle         = "KB-MEANR",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.075,
+     slippage           = 1,
+     pyramiding         = 0,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ── INPUTS
+
+gBB = "1. Bollinger Bands"
+bb_len   = input.int(20,  "BB Length",  minval=5, group=gBB)
+bb_mult  = input.float(2.0, "BB StdDev", minval=1.0, step=0.1, group=gBB)
+bb_src   = input.source(close, "Source", group=gBB)
+
+gRSI = "2. RSI"
+rsi_len      = input.int(14, "RSI Length", minval=2, group=gRSI)
+rsi_oversold = input.int(30, "Oversold", minval=10, maxval=50, group=gRSI)
+rsi_overbought = input.int(70, "Overbought", minval=50, maxval=90, group=gRSI)
+rsi_extreme_bars = input.int(3, "Barres max depuis RSI extreme", minval=1, maxval=10, group=gRSI)
+
+gMACD = "3. MACD"
+use_macd     = input.bool(true, "Filtre MACD direction", group=gMACD)
+macd_fast    = input.int(12, "Fast", minval=2, group=gMACD)
+macd_slow    = input.int(26, "Slow", minval=2, group=gMACD)
+macd_signal  = input.int(9,  "Signal", minval=2, group=gMACD)
+
+gMAC = "4. Macro Trend"
+use_ema_macro = input.bool(false, "Filtre EMA200 macro (mean rev contre-trend autorisé)", group=gMAC)
+ema_macro_len = input.int(200, "EMA Macro", minval=10, group=gMAC)
+allow_short   = input.bool(true, "Activer SHORTS", group=gMAC)
+
+gVOL = "5. Volume & Volatilité"
+use_vol_filter = input.bool(true, "Volume > MA", group=gVOL)
+vol_ma_len     = input.int(20, "Vol MA", minval=2, group=gVOL)
+vol_mult       = input.float(1.0, "Vol min x MA", minval=0.5, step=0.1, group=gVOL)
+atr_len        = input.int(14, "ATR Length", minval=1, group=gVOL)
+min_atr_pct    = input.float(0.2, "ATR min pct prix (anti-low-vol)", minval=0.0, step=0.05, group=gVOL)
+
+gKZ = "6. KillZones UTC"
+use_killzones = input.bool(false, "KillZones (off=24/7 crypto)", group=gKZ)
+kz_london_start = input.int(7,  "London start", minval=0, maxval=23, group=gKZ)
+kz_london_end   = input.int(10, "London end",   minval=0, maxval=23, group=gKZ)
+kz_ny_start     = input.int(13, "NY start",     minval=0, maxval=23, group=gKZ)
+kz_ny_end       = input.int(17, "NY end",       minval=0, maxval=23, group=gKZ)
+
+gRM = "7. Risk Management"
+risk_pct          = input.float(2.0, "Risque pct par trade", minval=0.1, maxval=10.0, step=0.1, group=gRM)
+atr_stop_mult     = input.float(2.0, "Stop = ATR x (hors BB)", minval=0.5, maxval=5.0, step=0.1, group=gRM)
+target_mode       = input.string("BB_mid", "Target", options=["BB_mid","VWAP","Fixed_RR"], group=gRM)
+fixed_rr          = input.float(1.5, "RR fixe (si Fixed_RR)", minval=0.5, maxval=5.0, step=0.1, group=gRM)
+use_partial_tp    = input.bool(true, "TP partiel 50pct a 1R", group=gRM)
+move_be_after_tp1 = input.bool(true, "Move BE after TP1", group=gRM)
+dd_throttle       = input.float(8.0, "DD throttle", minval=0.0, maxval=50.0, step=0.5, group=gRM)
+throttle_factor   = input.float(0.5, "Mult throttle", minval=0.1, maxval=1.0, step=0.1, group=gRM)
+max_risk_cap      = input.float(4.0, "Cap risque pct", minval=1.0, maxval=10.0, step=0.5, group=gRM)
+cooldown_bars     = input.int(5, "Cooldown apres trade (barres)", minval=0, group=gRM)
+
+// =============================================================================
+//  INDICATEURS
+// =============================================================================
+
+// Bollinger Bands
+basis  = ta.sma(bb_src, bb_len)
+dev    = bb_mult * ta.stdev(bb_src, bb_len)
+bb_up  = basis + dev
+bb_dn  = basis - dev
+bb_mid = basis
+
+// RSI + tracking extreme
+rsi   = ta.rsi(close, rsi_len)
+var int bars_since_oversold   = 999
+var int bars_since_overbought = 999
+bars_since_oversold   := rsi <= rsi_oversold   ? 0 : bars_since_oversold   + 1
+bars_since_overbought := rsi >= rsi_overbought ? 0 : bars_since_overbought + 1
+bool rsi_recently_oversold   = bars_since_oversold   <= rsi_extreme_bars
+bool rsi_recently_overbought = bars_since_overbought <= rsi_extreme_bars
+
+// MACD
+[macd_v, macd_sig, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+bool macd_bull = not use_macd or (macd_hist > macd_hist[1])  // histogramme en hausse
+bool macd_bear = not use_macd or (macd_hist < macd_hist[1])
+
+// EMA Macro (optionnel)
+ema_macro = ta.ema(close, ema_macro_len)
+bool macro_bull = not use_ema_macro or close > ema_macro
+bool macro_bear = not use_ema_macro or close < ema_macro
+
+// VWAP daily anchored
+vwap_v = ta.vwap(hlc3)
+
+// Volume + ATR
+vol_ma = ta.sma(volume, vol_ma_len)
+bool vol_ok = not use_vol_filter or volume >= vol_ma * vol_mult
+atr = ta.atr(atr_len)
+bool vol_regime_ok = (atr / close * 100) >= min_atr_pct  // volatilité suffisante
+
+// KillZones
+h_ut = hour(time, "UTC")
+bool in_london = h_ut >= kz_london_start and h_ut < kz_london_end
+bool in_ny     = h_ut >= kz_ny_start     and h_ut < kz_ny_end
+bool in_killzone = not use_killzones or in_london or in_ny
+
+// =============================================================================
+//  CONDITIONS D'ENTRÉE (mean reversion)
+//
+//  LONG : prix touche bande basse + RSI oversold récent + MACD direction OK
+//         + Volume OK + volatility OK + macro OK + dans killzone
+//  SHORT : miroir
+// =============================================================================
+
+bool touched_lower_bb = low <= bb_dn and close > bb_dn  // wick sous BB low + close au-dessus
+bool touched_upper_bb = high >= bb_up and close < bb_up // wick sur BB high + close en-dessous
+
+// Cooldown
+var int last_trade_bar = -1000
+bool cooldown_ok = (bar_index - last_trade_bar) >= cooldown_bars
+
+bool buy_setup  = touched_lower_bb and rsi_recently_oversold   and macd_bull and macro_bull and vol_ok and vol_regime_ok and in_killzone and cooldown_ok
+bool short_setup = allow_short and touched_upper_bb and rsi_recently_overbought and macd_bear and macro_bear and vol_ok and vol_regime_ok and in_killzone and cooldown_ok
+
+// =============================================================================
+//  RISK SIZING
+// =============================================================================
+
+var float peak_eq = 0.0
+peak_eq := math.max(peak_eq, strategy.equity)
+float current_dd_pct = peak_eq > 0 ? (peak_eq - strategy.equity) / peak_eq * 100 : 0
+bool throttled = current_dd_pct > dd_throttle
+
+float effective_risk = math.min((throttled ? risk_pct * throttle_factor : risk_pct), max_risk_cap)
+float risk_cash = strategy.equity * (effective_risk / 100.0)
+
+// Stop : hors BB (à 1×ATR sous BB low pour long, sur BB high pour short)
+float long_stop_lvl  = bb_dn - atr * 0.5
+float short_stop_lvl = bb_up + atr * 0.5
+
+float long_stop_dist  = math.max(close - long_stop_lvl, atr * 0.5)
+float short_stop_dist = math.max(short_stop_lvl - close, atr * 0.5)
+
+// Target selon mode
+float long_target  = target_mode == "BB_mid" ? bb_mid : target_mode == "VWAP" ? vwap_v : close + long_stop_dist * fixed_rr
+float short_target = target_mode == "BB_mid" ? bb_mid : target_mode == "VWAP" ? vwap_v : close - short_stop_dist * fixed_rr
+
+// Si target en-dessous de entry pour long, recalculer en RR fixe
+if long_target <= close
+    long_target := close + long_stop_dist * fixed_rr
+if short_target >= close
+    short_target := close - short_stop_dist * fixed_rr
+
+float qty_long  = long_stop_dist  > 0 ? risk_cash / long_stop_dist  : na
+float qty_short = short_stop_dist > 0 ? risk_cash / short_stop_dist : na
+
+// =============================================================================
+//  EXÉCUTION + TP partiel
+// =============================================================================
+
+var float entry_price = na
+var bool  tp1_done    = false
+var float tp1_lvl     = na
+
+if buy_setup and strategy.position_size <= 0
+    if strategy.position_size < 0
+        strategy.close("Short", comment="Cover")
+    strategy.entry("Long", strategy.long, qty=qty_long)
+    entry_price := close
+    tp1_lvl     := close + long_stop_dist  // 1R = TP1
+    tp1_done    := false
+    last_trade_bar := bar_index
+
+if short_setup and strategy.position_size >= 0
+    if strategy.position_size > 0
+        strategy.close("Long", comment="Close")
+    strategy.entry("Short", strategy.short, qty=qty_short)
+    entry_price := close
+    tp1_lvl     := close - short_stop_dist  // 1R = TP1
+    tp1_done    := false
+    last_trade_bar := bar_index
+
+// TP partiel à 1R
+if strategy.position_size > 0 and use_partial_tp and not tp1_done and high >= tp1_lvl
+    strategy.close("Long", qty_percent=50, comment="TP1")
+    tp1_done := true
+
+if strategy.position_size < 0 and use_partial_tp and not tp1_done and low <= tp1_lvl
+    strategy.close("Short", qty_percent=50, comment="TP1")
+    tp1_done := true
+
+// BE après TP1
+if strategy.position_size > 0 and tp1_done and move_be_after_tp1 and low <= entry_price
+    strategy.close("Long", comment="BE")
+    tp1_done := false
+
+if strategy.position_size < 0 and tp1_done and move_be_after_tp1 and high >= entry_price
+    strategy.close("Short", comment="BE")
+    tp1_done := false
+
+// Exit final : SL ou Target
+if strategy.position_size > 0
+    strategy.exit("L-Exit", "Long", stop=long_stop_lvl, limit=long_target)
+if strategy.position_size < 0
+    strategy.exit("S-Exit", "Short", stop=short_stop_lvl, limit=short_target)
+
+// =============================================================================
+//  VISUALISATION
+// =============================================================================
+
+p_up   = plot(bb_up,  "BB Upper", color=color.new(#ef4444, 50))
+p_dn   = plot(bb_dn,  "BB Lower", color=color.new(#22c55e, 50))
+p_mid  = plot(bb_mid, "BB Mid",   color=color.new(#94a3b8, 50))
+fill(p_up, p_dn, color=color.new(#3b82f6, 95))
+
+plot(vwap_v, "VWAP", color=color.new(#a855f7, 0), linewidth=2)
+plot(use_ema_macro ? ema_macro : na, "EMA Macro", color=color.new(#f97316, 0), linewidth=1)
+
+bgcolor(not in_killzone and use_killzones ? color.new(color.gray, 90) : na, title="Hors KZ")
+bgcolor(throttled ? color.new(#ef4444, 92) : na, title="DD throttle")
+bgcolor(rsi_recently_oversold   ? color.new(#22c55e, 92) : na, title="RSI OS")
+bgcolor(rsi_recently_overbought ? color.new(#ef4444, 92) : na, title="RSI OB")
+
+plotshape(buy_setup,   "Buy",   shape.labelup,   location.belowbar, color.new(#22c55e, 0), text="L", textcolor=color.black, size=size.small)
+plotshape(short_setup, "Short", shape.labeldown, location.abovebar, color.new(#ef4444, 0), text="S", textcolor=color.white, size=size.small)

@@ -1,0 +1,358 @@
+//@version=6
+// =============================================================================
+//  KB SMC FRACTAL — Smart Money Concepts All-in-One Indicator
+//  Inspiré : @low_wick, Range Scenarios, Elliott Wave corrections
+//
+//  CE QUE L'INDICATEUR AFFICHE :
+//    1. Asia Session High / Low / Mid (sessions configurables)
+//    2. Fractals (swing high / low confirmés)
+//    3. FVG / Fair Value Gaps (imbalances 3 bougies)
+//    4. Order Blocks (dernière bougie opposée avant impulsion)
+//    5. Liquidity Sweeps (wick perçant un swing récent + reclaim)
+//    6. BOS - Break of Structure (cassure du dernier swing)
+//    7. POI - Points of Interest (OB + LiqPool en confluence)
+//    8. Inducement detection (faux breakout pour piéger retail)
+//    9. ABC correction labels (3 swings alternés = pullback Elliott)
+//
+//  PHILOSOPHIE (REACT DON'T PREDICT) :
+//    - On ne prédit pas, on REAGIT à la confluence multi-signal
+//    - Le sweep + reclaim = signature institutionnelle
+//    - "Banks sell Tops, buy Bottoms / Dumb money buy Tops, sell Bottoms"
+//    - On entre APRES la liquidité prise, pas avant
+// =============================================================================
+
+indicator(
+     title       = "KB SMC Fractal [Killingbot]",
+     shorttitle  = "KB-SMC",
+     overlay     = true,
+     max_lines_count   = 500,
+     max_labels_count  = 500,
+     max_boxes_count   = 500)
+
+// ── INPUTS
+
+gAS = "1. Asia Session"
+show_asia = input.bool(true, "Asia H/L/Mid lines", group=gAS)
+asia_start_h = input.int(0,  "Asia start hour (UTC)", minval=0, maxval=23, group=gAS)
+asia_end_h   = input.int(6,  "Asia end hour (UTC)",   minval=1, maxval=23, group=gAS)
+asia_color   = input.color(color.new(#3b82f6, 70), "Asia zone color", group=gAS)
+asia_line_color = input.color(color.new(#3b82f6, 0), "Asia line color", group=gAS)
+
+gFR = "2. Fractals (swing H/L)"
+show_fractals = input.bool(true, "Show fractals", group=gFR)
+fractal_n     = input.int(2, "N bars chaque cote", minval=1, maxval=10, group=gFR)
+fractal_up_color   = input.color(color.new(#ef4444, 0), "Fractal high", group=gFR)
+fractal_down_color = input.color(color.new(#22c55e, 0), "Fractal low",  group=gFR)
+
+gFVG = "3. FVG (Fair Value Gaps)"
+show_fvg     = input.bool(true, "Show FVG", group=gFVG)
+fvg_max      = input.int(20, "Max FVG affiches", minval=1, maxval=50, group=gFVG)
+fvg_min_atr  = input.float(0.3, "FVG min size x ATR", minval=0.0, step=0.05, group=gFVG)
+fvg_bull_color = input.color(color.new(#22c55e, 85), "FVG bull", group=gFVG)
+fvg_bear_color = input.color(color.new(#ef4444, 85), "FVG bear", group=gFVG)
+fvg_extend_bars = input.int(50, "FVG extend bars", minval=5, maxval=500, group=gFVG)
+
+gOB = "4. Order Blocks"
+show_ob   = input.bool(true, "Show Order Blocks", group=gOB)
+ob_max    = input.int(10, "Max OB affiches", minval=1, maxval=30, group=gOB)
+ob_lookback = input.int(20, "OB lookback (barres)", minval=5, maxval=100, group=gOB)
+ob_min_impulse_atr = input.float(1.5, "Impulse min x ATR", minval=0.5, step=0.1, group=gOB)
+ob_bull_color = input.color(color.new(#22c55e, 70), "OB bull", group=gOB)
+ob_bear_color = input.color(color.new(#ef4444, 70), "OB bear", group=gOB)
+
+gSW = "5. Liquidity Sweeps"
+show_sweeps = input.bool(true, "Show sweeps", group=gSW)
+sweep_lookback = input.int(20, "Sweep lookback", minval=5, maxval=100, group=gSW)
+sweep_wick_atr = input.float(0.3, "Wick min x ATR", minval=0.05, step=0.05, group=gSW)
+
+gBOS = "6. BOS / CHoCH"
+show_bos = input.bool(true, "Show BOS", group=gBOS)
+bos_color_bull = input.color(color.new(#22c55e, 0), "BOS bull", group=gBOS)
+bos_color_bear = input.color(color.new(#ef4444, 0), "BOS bear", group=gBOS)
+
+gPOI = "7. POI Confluence"
+show_poi = input.bool(true, "Show POI (OB+Sweep confluence)", group=gPOI)
+poi_window_bars = input.int(5, "Window for confluence (barres)", minval=1, maxval=20, group=gPOI)
+
+gABC = "8. ABC Correction labels"
+show_abc = input.bool(true, "Show ABC labels", group=gABC)
+abc_min_atr = input.float(0.5, "Min swing size x ATR", minval=0.1, step=0.1, group=gABC)
+
+gDB = "9. Dashboard"
+show_dash = input.bool(true, "Show dashboard", group=gDB)
+dash_pos  = input.string("top_right", "Position", options=["top_left","top_right","bottom_left","bottom_right"], group=gDB)
+
+// =============================================================================
+//  INDICATEURS DE BASE
+// =============================================================================
+atr = ta.atr(14)
+
+// =============================================================================
+//  1. ASIA SESSION H / L / Mid
+// =============================================================================
+h_ut = hour(time, "UTC")
+bool in_asia_now = h_ut >= asia_start_h and h_ut < asia_end_h
+bool asia_just_started = in_asia_now and not in_asia_now[1]
+bool asia_just_ended   = not in_asia_now and in_asia_now[1]
+
+var float asia_high  = na
+var float asia_low   = na
+var box   asia_box   = na
+var line  asia_hi_l  = na
+var line  asia_lo_l  = na
+var line  asia_mid_l = na
+
+if asia_just_started
+    asia_high := high
+    asia_low  := low
+    if show_asia
+        asia_box := box.new(bar_index, high, bar_index, low, border_color=asia_line_color, bgcolor=asia_color)
+
+if in_asia_now
+    asia_high := math.max(asia_high, high)
+    asia_low  := math.min(asia_low, low)
+    if show_asia and not na(asia_box)
+        box.set_top(asia_box, asia_high)
+        box.set_bottom(asia_box, asia_low)
+        box.set_right(asia_box, bar_index)
+
+if asia_just_ended and show_asia and not na(asia_high)
+    asia_mid := (asia_high + asia_low) / 2
+    asia_hi_l  := line.new(bar_index, asia_high, bar_index + 100, asia_high, color=asia_line_color, width=1, extend=extend.right)
+    asia_lo_l  := line.new(bar_index, asia_low,  bar_index + 100, asia_low,  color=asia_line_color, width=1, extend=extend.right)
+    asia_mid_l := line.new(bar_index, asia_mid, bar_index + 100, asia_mid,  color=color.new(asia_line_color, 50), width=1, style=line.style_dotted, extend=extend.right)
+    label.new(bar_index, asia_high, "Asia H " + str.tostring(asia_high, format.mintick), style=label.style_label_left, color=color.new(asia_line_color, 70), textcolor=color.white, size=size.tiny)
+    label.new(bar_index, asia_low,  "Asia L " + str.tostring(asia_low,  format.mintick), style=label.style_label_left, color=color.new(asia_line_color, 70), textcolor=color.white, size=size.tiny)
+
+// =============================================================================
+//  2. FRACTALS (Williams style)
+// =============================================================================
+float fr_high = ta.pivothigh(high, fractal_n, fractal_n)
+float fr_low  = ta.pivotlow(low,  fractal_n, fractal_n)
+
+plotshape(show_fractals and not na(fr_high), title="Fractal H", style=shape.triangledown, location=location.abovebar, color=fractal_up_color, size=size.tiny, offset=-fractal_n)
+plotshape(show_fractals and not na(fr_low),  title="Fractal L", style=shape.triangleup,   location=location.belowbar, color=fractal_down_color, size=size.tiny, offset=-fractal_n)
+
+// Track last 2 fractals (high & low) pour BOS / Sweep
+var float last_fr_high   = na
+var float last_fr_low    = na
+var int   last_fr_high_x = na
+var int   last_fr_low_x  = na
+var float prev_fr_high   = na
+var float prev_fr_low    = na
+
+if not na(fr_high)
+    prev_fr_high := last_fr_high
+    last_fr_high := fr_high
+    last_fr_high_x := bar_index - fractal_n
+if not na(fr_low)
+    prev_fr_low := last_fr_low
+    last_fr_low := fr_low
+    last_fr_low_x := bar_index - fractal_n
+
+// =============================================================================
+//  3. FVG (Fair Value Gap)
+//  Bull FVG : low[1] > high[3] → gap entre high il y a 3 bars et low il y a 1 bar
+//  Bear FVG : high[1] < low[3]
+// =============================================================================
+var box[] fvg_boxes = array.new<box>()
+
+bool fvg_bull_now = low[1] > high[3] and (low[1] - high[3]) >= atr * fvg_min_atr
+bool fvg_bear_now = high[1] < low[3] and (low[3] - high[1]) >= atr * fvg_min_atr
+
+if show_fvg and fvg_bull_now
+    bx = box.new(bar_index - 3, low[1], bar_index + fvg_extend_bars, high[3], bgcolor=fvg_bull_color, border_color=color.new(#22c55e, 50), border_width=1)
+    array.push(fvg_boxes, bx)
+    if array.size(fvg_boxes) > fvg_max
+        bx_old = array.shift(fvg_boxes)
+        box.delete(bx_old)
+
+if show_fvg and fvg_bear_now
+    bx = box.new(bar_index - 3, low[3], bar_index + fvg_extend_bars, high[1], bgcolor=fvg_bear_color, border_color=color.new(#ef4444, 50), border_width=1)
+    array.push(fvg_boxes, bx)
+    if array.size(fvg_boxes) > fvg_max
+        bx_old = array.shift(fvg_boxes)
+        box.delete(bx_old)
+
+// =============================================================================
+//  4. ORDER BLOCKS
+//  Bull OB : dernière bougie BAISSIÈRE avant une impulsion HAUSSIÈRE
+//  Bear OB : dernière bougie HAUSSIÈRE avant une impulsion BAISSIÈRE
+// =============================================================================
+var box[] ob_boxes = array.new<box>()
+
+float impulse_up = high - low[1]
+float impulse_dn = high[1] - low
+
+bool is_bear_bar = close < open
+bool is_bull_bar = close > open
+
+// Bull OB : dernière bougie baissière AVANT impulse up
+bool bull_ob_now = is_bear_bar[1] and is_bull_bar and (close - open) >= atr * ob_min_impulse_atr
+
+// Bear OB : dernière bougie haussière AVANT impulse down
+bool bear_ob_now = is_bull_bar[1] and is_bear_bar and (open - close) >= atr * ob_min_impulse_atr
+
+if show_ob and bull_ob_now
+    bx = box.new(bar_index - 1, high[1], bar_index + 30, low[1], bgcolor=ob_bull_color, border_color=color.new(#22c55e, 0), border_width=1)
+    array.push(ob_boxes, bx)
+    if array.size(ob_boxes) > ob_max
+        bx_old = array.shift(ob_boxes)
+        box.delete(bx_old)
+
+if show_ob and bear_ob_now
+    bx = box.new(bar_index - 1, high[1], bar_index + 30, low[1], bgcolor=ob_bear_color, border_color=color.new(#ef4444, 0), border_width=1)
+    array.push(ob_boxes, bx)
+    if array.size(ob_boxes) > ob_max
+        bx_old = array.shift(ob_boxes)
+        box.delete(bx_old)
+
+// =============================================================================
+//  5. LIQUIDITY SWEEPS
+// =============================================================================
+float recent_swing_high = ta.highest(high, sweep_lookback)
+float recent_swing_low  = ta.lowest(low,  sweep_lookback)
+
+bool sweep_long  = low  < recent_swing_low[1]  and close > recent_swing_low[1]  and (recent_swing_low[1]  - low)  >= atr * sweep_wick_atr
+bool sweep_short = high > recent_swing_high[1] and close < recent_swing_high[1] and (high - recent_swing_high[1]) >= atr * sweep_wick_atr
+
+if show_sweeps and sweep_long
+    label.new(bar_index, low, "SWP↑", style=label.style_label_up, color=color.new(#3b82f6, 0), textcolor=color.white, size=size.tiny)
+if show_sweeps and sweep_short
+    label.new(bar_index, high, "SWP↓", style=label.style_label_down, color=color.new(#fbbf24, 0), textcolor=color.black, size=size.tiny)
+
+// =============================================================================
+//  6. BOS / CHoCH (Break of Structure / Change of Character)
+//  Bull BOS : close > last fractal HIGH
+//  Bear BOS : close < last fractal LOW
+// =============================================================================
+var float bos_bull_lvl = na
+var float bos_bear_lvl = na
+var int   bos_bull_bar = 0
+var int   bos_bear_bar = 0
+
+bool bos_bull_now = not na(last_fr_high) and close > last_fr_high and close[1] <= last_fr_high
+bool bos_bear_now = not na(last_fr_low)  and close < last_fr_low  and close[1] >= last_fr_low
+
+if show_bos and bos_bull_now and bar_index > bos_bull_bar + 5
+    line.new(last_fr_high_x, last_fr_high, bar_index, last_fr_high, color=bos_color_bull, width=2, style=line.style_dashed)
+    label.new(bar_index, last_fr_high, "BOS↑", style=label.style_label_down, color=bos_color_bull, textcolor=color.white, size=size.small)
+    bos_bull_bar := bar_index
+
+if show_bos and bos_bear_now and bar_index > bos_bear_bar + 5
+    line.new(last_fr_low_x, last_fr_low, bar_index, last_fr_low, color=bos_color_bear, width=2, style=line.style_dashed)
+    label.new(bar_index, last_fr_low, "BOS↓", style=label.style_label_up, color=bos_color_bear, textcolor=color.white, size=size.small)
+    bos_bear_bar := bar_index
+
+// =============================================================================
+//  7. POI - Confluence Order Block + Sweep récent
+// =============================================================================
+var int last_sweep_long_bar  = -1000
+var int last_sweep_short_bar = -1000
+if sweep_long
+    last_sweep_long_bar := bar_index
+if sweep_short
+    last_sweep_short_bar := bar_index
+
+bool poi_bull = bull_ob_now and (bar_index - last_sweep_long_bar) <= poi_window_bars
+bool poi_bear = bear_ob_now and (bar_index - last_sweep_short_bar) <= poi_window_bars
+
+if show_poi and poi_bull
+    label.new(bar_index, low - atr*0.5, "★ POI LONG", style=label.style_label_up, color=color.new(#fbbf24, 0), textcolor=color.black, size=size.normal)
+if show_poi and poi_bear
+    label.new(bar_index, high + atr*0.5, "★ POI SHORT", style=label.style_label_down, color=color.new(#fbbf24, 0), textcolor=color.black, size=size.normal)
+
+// =============================================================================
+//  8. ABC Correction labels (simple Elliott-style)
+//  Repère 3 fractals alternés consécutifs A→B→C dans la même structure
+// =============================================================================
+var int abc_state = 0  // 0=idle, 1=A found, 2=B found
+var float abc_a_price = na
+var float abc_b_price = na
+var int abc_a_bar = na
+var int abc_b_bar = na
+var bool abc_is_bull_correction = na  // true: low-high-low pullback inside uptrend
+
+if show_abc
+    if not na(fr_low) and abc_state == 0
+        abc_a_price := fr_low
+        abc_a_bar := bar_index - fractal_n
+        abc_state := 1
+        abc_is_bull_correction := true
+    else if not na(fr_high) and abc_state == 0
+        abc_a_price := fr_high
+        abc_a_bar := bar_index - fractal_n
+        abc_state := 1
+        abc_is_bull_correction := false
+    else if abc_state == 1
+        if abc_is_bull_correction and not na(fr_high) and fr_high > abc_a_price
+            abc_b_price := fr_high
+            abc_b_bar := bar_index - fractal_n
+            abc_state := 2
+        else if not abc_is_bull_correction and not na(fr_low) and fr_low < abc_a_price
+            abc_b_price := fr_low
+            abc_b_bar := bar_index - fractal_n
+            abc_state := 2
+    else if abc_state == 2
+        if abc_is_bull_correction and not na(fr_low) and math.abs(fr_low - abc_a_price) >= atr * abc_min_atr
+            // ABC bullish correction confirmé
+            label.new(abc_a_bar, abc_a_price, "A", style=label.style_label_up,   color=color.new(#94a3b8, 0), textcolor=color.white, size=size.tiny)
+            label.new(abc_b_bar, abc_b_price, "B", style=label.style_label_down, color=color.new(#94a3b8, 0), textcolor=color.white, size=size.tiny)
+            label.new(bar_index - fractal_n, fr_low, "C", style=label.style_label_up, color=color.new(#fbbf24, 0), textcolor=color.black, size=size.tiny)
+            abc_state := 0
+        else if not abc_is_bull_correction and not na(fr_high) and math.abs(fr_high - abc_a_price) >= atr * abc_min_atr
+            label.new(abc_a_bar, abc_a_price, "A", style=label.style_label_down, color=color.new(#94a3b8, 0), textcolor=color.white, size=size.tiny)
+            label.new(abc_b_bar, abc_b_price, "B", style=label.style_label_up,   color=color.new(#94a3b8, 0), textcolor=color.white, size=size.tiny)
+            label.new(bar_index - fractal_n, fr_high, "C", style=label.style_label_down, color=color.new(#fbbf24, 0), textcolor=color.black, size=size.tiny)
+            abc_state := 0
+
+// =============================================================================
+//  DASHBOARD
+// =============================================================================
+position dash_position = dash_pos == "top_left" ? position.top_left : dash_pos == "top_right" ? position.top_right : dash_pos == "bottom_left" ? position.bottom_left : position.bottom_right
+
+var table dash = table.new(dash_position, columns=2, rows=10, bgcolor=color.new(#0f172a, 10), border_width=1, border_color=color.new(#334155, 50))
+
+if show_dash and barstate.islast
+    table.clear(dash, 0, 0, 1, 9)
+    table.cell(dash, 0, 0, "🎯 KB SMC", text_color=color.white, bgcolor=color.new(#1e293b, 0))
+    table.cell(dash, 1, 0, syminfo.ticker + " " + timeframe.period, text_color=color.new(#94a3b8, 0), bgcolor=color.new(#1e293b, 0))
+
+    table.cell(dash, 0, 1, "Asia H", text_color=asia_line_color)
+    table.cell(dash, 1, 1, na(asia_high) ? "—" : str.tostring(asia_high, format.mintick), text_color=color.white)
+
+    table.cell(dash, 0, 2, "Asia L", text_color=asia_line_color)
+    table.cell(dash, 1, 2, na(asia_low) ? "—" : str.tostring(asia_low, format.mintick), text_color=color.white)
+
+    table.cell(dash, 0, 3, "Last Fract H", text_color=fractal_up_color)
+    table.cell(dash, 1, 3, na(last_fr_high) ? "—" : str.tostring(last_fr_high, format.mintick), text_color=color.white)
+
+    table.cell(dash, 0, 4, "Last Fract L", text_color=fractal_down_color)
+    table.cell(dash, 1, 4, na(last_fr_low) ? "—" : str.tostring(last_fr_low, format.mintick), text_color=color.white)
+
+    table.cell(dash, 0, 5, "Last Sweep L", text_color=color.new(#3b82f6, 0))
+    table.cell(dash, 1, 5, last_sweep_long_bar < 0 ? "—" : str.tostring(bar_index - last_sweep_long_bar) + " bars", text_color=color.white)
+
+    table.cell(dash, 0, 6, "Last Sweep S", text_color=color.new(#fbbf24, 0))
+    table.cell(dash, 1, 6, last_sweep_short_bar < 0 ? "—" : str.tostring(bar_index - last_sweep_short_bar) + " bars", text_color=color.white)
+
+    bias_text = not na(last_fr_high) and not na(last_fr_low) ? (close > (last_fr_high + last_fr_low)/2 ? "LONG bias" : "SHORT bias") : "—"
+    bias_col  = bias_text == "LONG bias" ? color.new(#22c55e, 0) : bias_text == "SHORT bias" ? color.new(#ef4444, 0) : color.gray
+    table.cell(dash, 0, 7, "Bias", text_color=color.new(#cbd5e1, 0))
+    table.cell(dash, 1, 7, bias_text, text_color=color.white, bgcolor=color.new(bias_col, 60))
+
+    table.cell(dash, 0, 8, "ATR(14)", text_color=color.new(#cbd5e1, 0))
+    table.cell(dash, 1, 8, str.tostring(atr, format.mintick), text_color=color.white)
+
+    table.cell(dash, 0, 9, "Process", text_color=color.new(#fbbf24, 0))
+    table.cell(dash, 1, 9, "REACT, DON'T PREDICT", text_color=color.white)
+
+// =============================================================================
+//  ALERTES
+// =============================================================================
+alertcondition(poi_bull, title="POI LONG", message="POI LONG detected on {{ticker}} {{interval}}")
+alertcondition(poi_bear, title="POI SHORT", message="POI SHORT detected on {{ticker}} {{interval}}")
+alertcondition(bos_bull_now, title="BOS Bull", message="BOS Bull on {{ticker}} {{interval}}")
+alertcondition(bos_bear_now, title="BOS Bear", message="BOS Bear on {{ticker}} {{interval}}")
+alertcondition(sweep_long, title="Sweep Long", message="Liquidity Sweep Long on {{ticker}} {{interval}}")
+alertcondition(sweep_short, title="Sweep Short", message="Liquidity Sweep Short on {{ticker}} {{interval}}")

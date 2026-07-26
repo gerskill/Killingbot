@@ -1,0 +1,133 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════
+// PP-ST + EMA200 + ADX — BTC 4H  ★ V2 LONG + SHORT ★
+// ─────────────────────────────────────────────────────────────
+// Base : pp_st_btc_4h_final.pine (confirmé live 2026-07-18 :
+//   +2947% | DD 24.53% | PF 2.52 | 59 trades | WR 33.9% — LONG ONLY)
+// La logique LONG est strictement identique à la version finale.
+//
+// Ajouts V2 (chacun désactivable) :
+//   SHORTS   : miroir exact — PP-ST flip down + close < EMA200 + ADX
+//   HARD SL  : stop ATR optionnel sous/sur l'entrée (réduit le DD)
+//   COOLDOWN : barres min entre trades (anti-whipsaw)
+//   SIZING   : risque % par trade optionnel (sinon 100% equity comme V1)
+//   ALERTES  : JSON webhook LONG/CLOSE/SHORT/COVER (webhook_server.py)
+// ═══════════════════════════════════════════════════════════════
+strategy("PP-ST + EMA200 + ADX — BTC 4H V2 L/S", overlay=true, shorttitle="PP-ST-V2",
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     commission_type=strategy.commission.percent,
+     commission_value=0.1,
+     slippage=1)
+
+// ── Inputs — identiques V1
+prd    = input.int(2,    "Pivot Period", minval=1, maxval=50, group="PP SuperTrend")
+Factor = input.float(5.0,"ATR Factor",  minval=1, step=0.1,  group="PP SuperTrend")
+Pd     = input.int(14,   "ATR Period",  minval=1,            group="PP SuperTrend")
+adxMin = input.int(20,   "ADX Min",     minval=1,            group="Filtres")
+
+// ── Inputs — nouveaux V2
+useShorts  = input.bool(true,  "Activer les shorts",            group="V2 — Shorts")
+shortAdx   = input.int(20,     "ADX Min shorts",                minval=1, group="V2 — Shorts") // séparé : les bear moves BTC sont plus violents, seuil ajustable
+// Tests 2026-07-19 (BINANCE:BTCUSD 4H deep 2020-2026) : SL dur nuit aux longs
+// (PF monte mais P&L et DD se dégradent), aide les shorts (DD 33->23%).
+// Défaut : SL shorts seulement.
+slMode     = input.string("Shorts seulement", "Hard SL ATR", options=["Off", "Shorts seulement", "Longs et shorts"], group="V2 — Risque")
+slAtrMult  = input.float(2.0,  "Hard SL (xATR)",                minval=0.5, step=0.5, group="V2 — Risque")
+bool slLongOn  = slMode == "Longs et shorts"
+bool slShortOn = slMode != "Off"
+useRiskSz  = input.bool(false, "Sizing risque % (sinon 100% equity)", group="V2 — Risque")
+riskPct    = input.float(1.0,  "Risque par trade (%)",          minval=0.1, step=0.25, group="V2 — Risque")
+cooldown   = input.int(0,      "Cooldown (barres, 0=off)",      minval=0, maxval=50, group="V2 — Risque")
+
+// ── Pivot Points → Centre pondéré (identique V1)
+float ph = ta.pivothigh(prd, prd)
+float pl = ta.pivotlow(prd, prd)
+
+var float center = na
+float lastpp = not na(ph) ? ph : not na(pl) ? pl : na
+if not na(lastpp)
+    center := na(center) ? lastpp : (center * 2 + lastpp) / 3
+
+// ── Bandes + Trend (identique V1)
+float Up = center - Factor * ta.atr(Pd)
+float Dn = center + Factor * ta.atr(Pd)
+
+var float TUp   = na
+var float TDown = na
+var int   Trend = 1
+
+TUp   := nz(close[1]) > nz(TUp[1])   ? math.max(Up, nz(TUp[1]))   : Up
+TDown := nz(close[1]) < nz(TDown[1]) ? math.min(Dn, nz(TDown[1])) : Dn
+Trend := close > nz(TDown[1]) ? 1 : close < nz(TUp[1]) ? -1 : nz(Trend[1], 1)
+
+float TrailSL = Trend == 1 ? TUp : TDown
+
+// ── Filtres (identique V1 + miroir bear)
+float ema200     = ta.ema(close, 200)
+bool  bull_macro = close > ema200
+bool  bear_macro = close < ema200
+[_, _, adxVal]   = ta.dmi(14, 14)
+bool trending      = adxVal >= adxMin
+bool trendingShort = adxVal >= shortAdx
+
+// ── Cooldown
+var int last_trade_bar = -999
+bool cooled = cooldown == 0 or (bar_index - last_trade_bar) >= cooldown
+
+// ── Signaux
+bool flipUp   = Trend == 1  and nz(Trend[1]) == -1
+bool flipDown = Trend == -1 and nz(Trend[1]) == 1
+
+// LONG — strictement identique V1 (+ cooldown optionnel, off par défaut)
+bool buy   = flipUp and bull_macro and trending and cooled
+bool sellX = flipDown
+
+// SHORT — miroir exact
+bool sellShort = useShorts and flipDown and bear_macro and trendingShort and cooled
+bool coverX    = flipUp
+
+// ── Sizing
+float atrNow  = ta.atr(Pd)
+float slDist  = slAtrMult * atrNow
+float qtyLong  = useRiskSz ? (strategy.equity * riskPct / 100) / slDist : na
+float qtyShort = qtyLong
+
+// ── Ordres LONG (identique V1)
+if buy
+    strategy.entry("Long", strategy.long, qty=qtyLong,
+         alert_message='{"setup":"A*","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}')
+    last_trade_bar := bar_index
+    if slLongOn
+        strategy.exit("Long-SL", "Long", stop=close - slDist)
+if sellX or (strategy.position_size > 0 and not bull_macro)
+    strategy.close("Long",
+         alert_message='{"setup":"B","dir":"CLOSE","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}')
+
+// ── Ordres SHORT (nouveau)
+if sellShort
+    strategy.entry("Short", strategy.short, qty=qtyShort,
+         alert_message='{"setup":"A*","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}')
+    last_trade_bar := bar_index
+    if slShortOn
+        strategy.exit("Short-SL", "Short", stop=close + slDist)
+if coverX or (strategy.position_size < 0 and not bear_macro)
+    strategy.close("Short",
+         alert_message='{"setup":"B","dir":"COVER","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}')
+
+// ── Visualisation
+lc = Trend == 1 ? color.lime : color.red
+plot(TrailSL, color=lc, linewidth=2, title="PP-ST")
+plot(ema200,  color=color.new(color.orange, 0), linewidth=1, title="EMA200")
+bgcolor(trending ? na : color.new(color.gray, 94), title="ADX Range zone")
+plotshape(buy       ? TrailSL : na, "Buy",   shape.labelup,   location.absolute, color.lime,   textcolor=color.black, text="▲ LONG",  size=size.small)
+plotshape(sellX     ? TrailSL : na, "Exit",  shape.labeldown, location.absolute, color.orange, textcolor=color.white, text="EXIT",    size=size.tiny)
+plotshape(sellShort ? TrailSL : na, "Short", shape.labeldown, location.absolute, color.red,    textcolor=color.white, text="▼ SHORT", size=size.small)
+plotshape(coverX    ? TrailSL : na, "Cover", shape.labelup,   location.absolute, color.aqua,   textcolor=color.black, text="COVER",   size=size.tiny)
+
+// ── Alertes fixes (alertcondition = const string requis)
+alertcondition(buy,       "PP-ST V2 Long",  "LONG signal")
+alertcondition(sellX,     "PP-ST V2 Exit",  "EXIT signal")
+alertcondition(sellShort, "PP-ST V2 Short", "SHORT signal")
+alertcondition(coverX,    "PP-ST V2 Cover", "COVER signal")

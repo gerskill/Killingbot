@@ -1,0 +1,16 @@
+{
+  "symbol": "COINBASE:BTCUSD",
+  "tf": "1H",
+  "period": "2024-01-01 → 2026-06-07 (données limitées)",
+  "results": {
+    "netProfitPct": -0.82,
+    "maxDrawdownPct": 1.44,
+    "profitFactor": 0.19,
+    "totalTrades": 2,
+    "winRate": 50.00,
+    "expectancyUSD": -41.07,
+    "sharpe": -0.837
+  },
+  "notes": "INSUFFISANT — seulement 2 trades sur 2.5 ans. Filtres Stoic trop restrictifs pour 1H BTC (score≥3 + cooldown 5 bars + robust_filter). Confirme que Stoic est conçu pour HTF (4H+), pas intraday court. Ne pas conclure de cet échantillon.",
+  "ts": "2026-06-07"
+}

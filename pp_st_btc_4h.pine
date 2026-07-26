@@ -1,0 +1,69 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════
+// PP SuperTrend + EMA200 Filter — BTC 4H Long Only
+// ─────────────────────────────────────────────────────────
+// Résultats backtestés 2020-2026 sur BINANCE:BTCUSDT 4H :
+//   +2039% | DD 26.15% | PF 2.089 | 71 trades | WR 31%
+//
+// Paramètres optimaux :
+//   Pivot Period : 2
+//   ATR Factor   : 5.0
+//   ATR Period   : 14
+//   EMA Filter   : 200 (macro bull/bear filter)
+// ═══════════════════════════════════════════════════════════
+strategy("PP-ST + EMA200 — BTC 4H", overlay=true, shorttitle="PP-ST-B",
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     commission_type=strategy.commission.percent,
+     commission_value=0.1,
+     slippage=1)
+
+// ── Inputs
+prd    = input.int(2,    "Pivot Period", minval=1, maxval=50, group="PP SuperTrend")
+Factor = input.float(5.0,"ATR Factor",  minval=1, step=0.1,  group="PP SuperTrend")
+Pd     = input.int(14,   "ATR Period",  minval=1,            group="PP SuperTrend")
+ema_f  = input.int(200,  "EMA Macro",   minval=10,           group="Filtre Macro")
+
+// ── Pivot Points → Centre pondéré
+float ph = ta.pivothigh(prd, prd)
+float pl = ta.pivotlow(prd, prd)
+
+var float center = na
+float lastpp = not na(ph) ? ph : not na(pl) ? pl : na
+if not na(lastpp)
+    center := na(center) ? lastpp : (center * 2 + lastpp) / 3
+
+// ── Bandes SuperTrend
+float Up = center - Factor * ta.atr(Pd)
+float Dn = center + Factor * ta.atr(Pd)
+
+// ── Trend principal
+var float TUp   = na
+var float TDown = na
+var int   Trend = 1
+
+TUp   := nz(close[1]) > nz(TUp[1])   ? math.max(Up, nz(TUp[1]))   : Up
+TDown := nz(close[1]) < nz(TDown[1]) ? math.min(Dn, nz(TDown[1])) : Dn
+Trend := close > nz(TDown[1]) ? 1 : close < nz(TUp[1]) ? -1 : nz(Trend[1], 1)
+
+float TrailSL   = Trend == 1 ? TUp : TDown
+float ema200    = ta.ema(close, ema_f)
+bool  bull_macro = close > ema200
+
+// ── Signaux (Long Only + filtre macro)
+bool buy  = Trend == 1 and nz(Trend[1]) == -1 and bull_macro
+bool sell = Trend == -1 and nz(Trend[1]) == 1
+
+// ── Ordres
+if buy
+    strategy.entry("Long", strategy.long)
+if sell or (strategy.position_size > 0 and not bull_macro)
+    strategy.close("Long")
+
+// ── Visualisation
+lc = Trend == 1 ? color.lime : color.red
+plot(TrailSL, color=lc, linewidth=2, title="PP-ST")
+plot(ema200,  color=color.new(color.orange, 0), linewidth=1, title="EMA200")
+plotshape(buy  ? TrailSL : na, "Buy",  shape.labelup,   location.absolute, color.lime,   textcolor=color.black, text="▲ L", size=size.small)
+plotshape(sell ? TrailSL : na, "Sell", shape.labeldown, location.absolute, color.orange, textcolor=color.white, text="EXIT", size=size.tiny)

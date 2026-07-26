@@ -1,0 +1,71 @@
+//@version=6
+strategy("KB ORB+VWAP v1", overlay=true, initial_capital=25000, commission_type=strategy.commission.cash_per_contract, commission_value=0.62, slippage=1, calc_on_every_tick=false, margin_long=5, margin_short=5)
+
+riskPct = input.float(1.5, "Risque % par trade", minval=0.5, maxval=3.0, step=0.25)
+rrRatio = input.float(1.2, "Risk:Reward", minval=0.8, maxval=3.0, step=0.1)
+maxTradesDay = input.int(2, "Max trades/jour", minval=1, maxval=5)
+useVwapFilter = input.bool(true, "Filtre VWAP")
+useEmaFilter = input.bool(true, "Filtre EMA 200")
+
+inOR = not na(time(timeframe.period, "0930-0945", "America/New_York"))
+inTradeWindow = not na(time(timeframe.period, "0945-1130", "America/New_York"))
+sessionEnd = not na(time(timeframe.period, "1550-1555", "America/New_York"))
+
+var float orHigh = na
+var float orLow = na
+var int tradesToday = 0
+
+newDay = ta.change(time("D")) != 0
+if newDay
+    orHigh := na
+    orLow := na
+    tradesToday := 0
+
+if inOR
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow := na(orLow) ? low : math.min(orLow, low)
+
+vwapVal = ta.vwap(hlc3)
+ema200 = ta.ema(close, 200)
+atrVal = ta.atr(14)
+
+orReady = not na(orHigh) and not na(orLow) and not inOR
+canTrade = inTradeWindow and orReady and tradesToday < maxTradesDay and strategy.position_size == 0
+
+longBreak = canTrade and close > orHigh and close[1] <= orHigh
+shortBreak = canTrade and close < orLow and close[1] >= orLow
+
+longVwapOk = not useVwapFilter or close > vwapVal
+shortVwapOk = not useVwapFilter or close < vwapVal
+longEmaOk = not useEmaFilter or close > ema200
+shortEmaOk = not useEmaFilter or close < ema200
+
+longSignal = longBreak and longVwapOk and longEmaOk
+shortSignal = shortBreak and shortVwapOk and shortEmaOk
+
+slLongRaw = math.max(orLow, close - 2 * atrVal)
+slShortRaw = math.min(orHigh, close + 2 * atrVal)
+riskLongPts = close - slLongRaw
+riskShortPts = slShortRaw - close
+
+qtyLong = riskLongPts > 0 ? math.floor((strategy.equity * riskPct / 100) / (riskLongPts * syminfo.pointvalue)) : 0
+qtyShort = riskShortPts > 0 ? math.floor((strategy.equity * riskPct / 100) / (riskShortPts * syminfo.pointvalue)) : 0
+
+if longSignal and qtyLong >= 1
+    strategy.entry("L", strategy.long, qty=qtyLong)
+    strategy.exit("L-X", "L", stop=slLongRaw, limit=close + riskLongPts * rrRatio)
+    tradesToday += 1
+
+if shortSignal and qtyShort >= 1
+    strategy.entry("S", strategy.short, qty=qtyShort)
+    strategy.exit("S-X", "S", stop=slShortRaw, limit=close - riskShortPts * rrRatio)
+    tradesToday += 1
+
+if sessionEnd and strategy.position_size != 0
+    strategy.close_all(comment="EOD")
+
+plot(orReady ? orHigh : na, "OR High", color=color.new(color.green, 0), style=plot.style_linebr)
+plot(orReady ? orLow : na, "OR Low", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(vwapVal, "VWAP", color=color.new(color.orange, 0))
+plot(ema200, "EMA200", color=color.new(color.blue, 40))
+bgcolor(inOR ? color.new(color.yellow, 90) : na)

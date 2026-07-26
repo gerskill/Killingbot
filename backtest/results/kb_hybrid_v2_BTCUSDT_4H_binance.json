@@ -1,0 +1,26 @@
+{
+  "strategy": "killingbot_hybrid_v2.pine",
+  "symbol": "BINANCE:BTCUSDT",
+  "tf": "4H",
+  "period": "2017-08-17 → 2026-06-07 (8.8 ans, 106 mois)",
+  "results": {
+    "netProfitPct": 495.70,
+    "maxDrawdownPct": 15.61,
+    "profitFactor": 2.512,
+    "totalTrades": 73,
+    "winRate": 49.32,
+    "avgWinPct": 17.70,
+    "avgLossPct": -4.46,
+    "sharpe": 0.264,
+    "expectancyUSD": 679.05,
+    "monthlyReturnSimplePct": 4.68,
+    "monthlyReturnCompoundedPct": 2.04
+  },
+  "objectives_check": {
+    "target_monthly_pct": 5,
+    "monthly_OK": false,
+    "max_dd_OK": true,
+    "comment": "Binance sous-performe vs Coinbase pour cette strat (3x moins de gain). Probable causes : 8 mois de moins d'historique, price discovery USDT plus bruité que USD, structure des wicks différente."
+  },
+  "ts": "2026-06-07"
+}

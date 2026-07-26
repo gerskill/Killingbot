@@ -1,0 +1,161 @@
+//@version=6
+// STOIC SBS — Swing Breakout Sequence (@StoicTA, tweet 7 juin 2024)
+// 1 Breakout · 2 First Tap · 3 Quick Scalp · 4 Return to Liquidate FT
+// 5 Double Bottom Reversal · 6 Target New Swing High · entree Fib 61.8
+strategy("STOIC SBS", overlay=true, shorttitle="STOIC-SBS",
+     initial_capital=10000, default_qty_type=strategy.cash,
+     commission_type=strategy.commission.percent, commission_value=0.04,
+     slippage=2, max_bars_back=500, pyramiding=0)
+
+gT="Theme"
+theme=input.string("StoicTA clair","Theme",options=["StoicTA clair","Dark adapte"],group=gT)
+bool dark=theme=="Dark adapte"
+color cUp=dark?#7fa650:#6f8f3f
+color cDown=dark?#d67a4a:#c07030
+color cLvl=dark?#d6752e:#b06830
+color cRib=dark?#7fa650:#b0c080
+
+gS="Structure"
+swingLen=input.int(10,"Longueur pivots (swing high/low)",minval=3,group=gS)
+maxWait =input.int(30,"Fenetre max apres breakout (barres)",minval=5,group=gS)
+sweepLook=input.int(5,"Minor low/high a liquider (barres)",minval=2,group=gS)
+
+gF="Fib entree"
+fibDeep=input.float(0.618,"Fib zone entree (deep tap)",step=0.01,group=gF)
+fibMax =input.float(0.90,"Fib max (invalide si depasse)",step=0.01,group=gF)
+
+gR="Risque & gestion"
+useShorts=input.bool(true,"Shorts (miroir)",group=gR)
+useTrend =input.bool(true,"Filtre tendance SMA50>200",group=gR)
+riskPct=input.float(1.0,"Risque par trade (%)",step=0.25,group=gR)
+t2fib=input.float(1.618,"T2 extension Fib",step=0.1,group=gR)
+t3fib=input.float(2.618,"T3 extension Fib",step=0.1,group=gR)
+
+s50=ta.sma(close,50)
+s200=ta.sma(close,200)
+bool upTrend=not useTrend or (s50>s200)
+bool dnTrend=not useTrend or (s50<s200)
+
+ph=ta.pivothigh(high,swingLen,swingLen)
+pl=ta.pivotlow(low,swingLen,swingLen)
+var float lastPH=na
+var float lastPL=na
+if not na(ph)
+    lastPH:=ph
+if not na(pl)
+    lastPL:=pl
+
+// hoist (consistance)
+float minorLowG  = ta.lowest(low,  sweepLook)[1]
+float minorHighG = ta.highest(high, sweepLook)[1]
+
+// ── LONG state machine ───────────────────────────────────────────────────────
+var int   Lstate=0
+var float Lhi=na
+var float Llo=na
+var int   Lbar=0
+var float LtapLow=na
+
+bool brkUp = not na(lastPH) and close > lastPH and close[1] <= lastPH and upTrend
+if brkUp and Lstate==0
+    Lstate:=1
+    Lhi:=high
+    Llo:=nz(lastPL, low)
+    Lbar:=bar_index
+    LtapLow:=na
+
+float Lrange = Lhi - Llo
+float LfibEntry = Lhi - Lrange*fibDeep
+float LfibMax   = Lhi - Lrange*fibMax
+
+if Lstate>=1
+    if bar_index - Lbar > maxWait
+        Lstate:=0
+    bool deepTap = low <= LfibEntry and low >= LfibMax
+    bool swept   = low < minorLowG
+    if Lstate==1 and deepTap and swept
+        Lstate:=2
+        LtapLow:=low
+    if low < Llo
+        Lstate:=0
+
+bool LdblBottom = Lstate==2 and close > minorLowG and close > open
+bool goLong = LdblBottom and strategy.position_size==0
+
+// ── SHORT miroir ─────────────────────────────────────────────────────────────
+var int   Sstate=0
+var float Slo=na
+var float Shi=na
+var int   Sbar=0
+var float StapHi=na
+
+bool brkDn = useShorts and not na(lastPL) and close < lastPL and close[1] >= lastPL and dnTrend
+if brkDn and Sstate==0
+    Sstate:=1
+    Slo:=low
+    Shi:=nz(lastPH, high)
+    Sbar:=bar_index
+    StapHi:=na
+
+float Srange = Shi - Slo
+float SfibEntry = Slo + Srange*fibDeep
+float SfibMax   = Slo + Srange*fibMax
+
+if Sstate>=1
+    if bar_index - Sbar > maxWait
+        Sstate:=0
+    bool deepTapS = high >= SfibEntry and high <= SfibMax
+    bool sweptS   = high > minorHighG
+    if Sstate==1 and deepTapS and sweptS
+        Sstate:=2
+        StapHi:=high
+    if high > Shi
+        Sstate:=0
+
+bool SdblTop = Sstate==2 and close < minorHighG and close < open
+bool goShort = useShorts and SdblTop and strategy.position_size==0
+
+// ── Execution ────────────────────────────────────────────────────────────────
+if goLong
+    float sl = math.min(LtapLow, Llo) - 0.1*(Lhi-Llo)
+    float risk = close - sl
+    if risk>0
+        float qty = strategy.equity*riskPct/100/risk
+        strategy.entry("L",strategy.long,qty=qty,alert_message='{"setup":"SBS","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+        strategy.exit("L-T1","L",qty_percent=50,stop=sl,limit=Lhi)
+        strategy.exit("L-T2","L",qty_percent=50,stop=sl,limit=Llo+(Lhi-Llo)*t2fib)
+        strategy.exit("L-T3","L",stop=sl,limit=Llo+(Lhi-Llo)*t3fib)
+    Lstate:=0
+
+if goShort
+    float sl = math.max(StapHi, Shi) + 0.1*(Shi-Slo)
+    float risk = sl - close
+    if risk>0
+        float qty = strategy.equity*riskPct/100/risk
+        strategy.entry("S",strategy.short,qty=qty,alert_message='{"setup":"SBS","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+        strategy.exit("S-T1","S",qty_percent=50,stop=sl,limit=Slo)
+        strategy.exit("S-T2","S",qty_percent=50,stop=sl,limit=Shi-(Shi-Slo)*t2fib)
+        strategy.exit("S-T3","S",stop=sl,limit=Shi-(Shi-Slo)*t3fib)
+    Sstate:=0
+
+plot(s50,"SMA50",color=color.new(cRib,40))
+plot(s200,"SMA200",color=color.new(cLvl,20),linewidth=2)
+plot(Lstate>=1?Lhi:na,"Breakout Hi",color=color.new(cLvl,0),style=plot.style_linebr)
+plot(Lstate>=1?LfibEntry:na,"Fib 61.8",color=color.new(cUp,30),style=plot.style_linebr)
+plotshape(goLong,"Long",shape.labelup,location.belowbar,cUp,text="SBS",textcolor=color.white,size=size.small)
+plotshape(goShort,"Short",shape.labeldown,location.abovebar,cDown,text="SBS",textcolor=color.white,size=size.small)
+barcolor(close>=open?cRib:cDown)
+
+var table tb=table.new(position.top_right,2,4,border_width=1)
+if barstate.islast
+    table.cell(tb,0,0,"STOIC SBS",text_color=color.white,bgcolor=color.new(color.black,15))
+    table.cell(tb,1,0,upTrend?"HAUSSIER":dnTrend?"BAISSIER":"NEUTRE",text_color=color.white,bgcolor=color.new(color.teal,25))
+    table.cell(tb,0,1,"Long state")
+    table.cell(tb,1,1,Lstate==0?"idle":Lstate==1?"breakout->tap":"tap->reclaim")
+    table.cell(tb,0,2,"Short state")
+    table.cell(tb,1,2,Sstate==0?"idle":Sstate==1?"breakout->tap":"tap->reclaim")
+    table.cell(tb,0,3,"TF")
+    table.cell(tb,1,3,timeframe.period)
+
+alertcondition(goLong,"SBS Long","STOIC SBS LONG")
+alertcondition(goShort,"SBS Short","STOIC SBS SHORT")

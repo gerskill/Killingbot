@@ -1,0 +1,253 @@
+//@version=6
+// =============================================================================
+//  KILLINGBOT INTRADAY V1 — High-Frequency Multi-Factor
+//  Cible : 10%/mois, DD <15%, WR ≥57%, ~2-3 trades/semaine
+//
+//  STACK (toutes les briques du projet exploitées) :
+//    C1 OUTLOOK    : VWAP daily + EMA 50 (bias session)
+//    C2 CONFLUENCE : PP-ST short (prd=1, Factor=3) — réactif intraday
+//    C3 STRUCTURE  : PDH/PDL/PDC + niveaux Stoic HCOM/LCOM
+//    C4 FILTRES    : ADX≥18, Volume > MA20, Kill Zones (London 7-10 NY 13-17 UTC)
+//    C5 QUALITÉ    : Stoic Score + Liquidity Sweep (X-Factor)
+//    C6 RISK       : RR 2:1, stop ATR 1.0, risk 3% par trade, DD throttle 8%
+//    C7 EXECUTION  : Long & Short, exit sur PP-ST reverse OU TP fixe OU stop
+//
+//  Pour 57% WR : RR 2:1 modeste mais cohérent
+//    Expectancy = 0.57×2 - 0.43×1 = +0.71R par trade
+//    10 trades/mois × 0.71R × 3% = +21% expected → reste room après slippage
+// =============================================================================
+
+strategy(
+     title              = "Killingbot Intraday V1",
+     shorttitle         = "KB-INTRA",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.075,
+     slippage           = 1,
+     pyramiding         = 0,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ── INPUTS
+gPP = "1. PP SuperTrend Intraday"
+prd    = input.int(1,    "Pivot Period (court=plus reactif)", minval=1, maxval=10, group=gPP)
+Factor = input.float(3.0,"ATR Factor (court=serre)", minval=1, step=0.1, group=gPP)
+Pd     = input.int(10,   "ATR Period",   minval=1,           group=gPP)
+
+gBI = "2. Bias intraday"
+use_vwap_bias = input.bool(true, "VWAP comme bias", group=gBI)
+ema_intraday  = input.int(50, "EMA intraday", minval=10, group=gBI)
+use_ema_filter = input.bool(true, "Filtre EMA intraday", group=gBI)
+
+gFLT = "3. Filtres force"
+adx_len  = input.int(14, "ADX Length", minval=1, group=gFLT)
+adx_min  = input.int(18, "ADX Min",    minval=1, group=gFLT)
+allow_short = input.bool(true, "SHORTS", group=gFLT)
+use_vol_filter = input.bool(true, "Filtre Volume > MA20", group=gFLT)
+vol_ma_len = input.int(20, "Volume MA Length", minval=2, group=gFLT)
+vol_min_mult = input.float(1.0, "Vol min = MA x ?", minval=0.5, step=0.1, group=gFLT)
+
+gKZ = "4. KillZones (heures UTC)"
+use_killzones = input.bool(true, "Activer KillZones", group=gKZ)
+kz_london_start = input.int(7,  "London start (UTC)", minval=0, maxval=23, group=gKZ)
+kz_london_end   = input.int(10, "London end (UTC)",   minval=0, maxval=23, group=gKZ)
+kz_ny_start     = input.int(13, "NY start (UTC)",     minval=0, maxval=23, group=gKZ)
+kz_ny_end       = input.int(17, "NY end (UTC)",       minval=0, maxval=23, group=gKZ)
+allow_asia      = input.bool(false, "Autoriser Asia (0-6 UTC)", group=gKZ)
+
+gSW = "5. X-FACTOR Liquidity Sweep"
+use_sweep        = input.bool(true,  "Sweep boost qty", group=gSW)
+sweep_lookback   = input.int(15,   "Sweep lookback", minval=5, maxval=50, group=gSW)
+sweep_wick_atr   = input.float(0.2, "Wick min xATR", minval=0.05, step=0.05, group=gSW)
+sweep_qty_boost  = input.float(1.4, "Boost sweep", minval=1.0, maxval=3.0, step=0.1, group=gSW)
+
+gST = "6. Stoic Score (bonus)"
+stoic_boost_enabled = input.bool(true, "Stoic boost", group=gST)
+atr_mult_p3 = input.float(0.5, "P3 distance daily xATR", minval=0.1, step=0.1, group=gST)
+fib_low     = input.float(0.5,   "P4 Fib low",  minval=0.3, maxval=0.7, step=0.01, group=gST)
+fib_high    = input.float(0.618, "P4 Fib high", minval=0.5, maxval=0.8, step=0.001, group=gST)
+
+gRM = "7. Risk + RR fixe"
+risk_pct        = input.float(3.0,  "Risque pct par trade", minval=0.1, maxval=15.0, step=0.1, group=gRM)
+atr_stop_mult   = input.float(1.0,  "Stop = ATR x", minval=0.3, maxval=5.0, step=0.1, group=gRM)
+rr_target       = input.float(2.0,  "Target = R x", minval=0.5, maxval=10.0, step=0.1, group=gRM)
+dd_throttle     = input.float(8.0,  "Throttle si DD pct >", minval=0.0, maxval=50.0, step=0.5, group=gRM)
+throttle_factor = input.float(0.5,  "Mult throttle", minval=0.1, maxval=1.0, step=0.1, group=gRM)
+max_risk_cap    = input.float(5.0,  "Cap max risque pct", minval=1.0, maxval=15.0, step=0.5, group=gRM)
+
+// =============================================================================
+//  INDICATEURS
+// =============================================================================
+atr   = ta.atr(Pd)
+ema_i = ta.ema(close, ema_intraday)
+
+// VWAP intraday — anchor sur début de session UTC (00:00)
+vwap_v = ta.vwap(hlc3)
+
+// Volume filter
+vol_ma = ta.sma(volume, vol_ma_len)
+bool vol_ok = not use_vol_filter or volume >= vol_ma * vol_min_mult
+
+// ADX
+[_, _, adxVal] = ta.dmi(adx_len, adx_len)
+bool trending = adxVal >= adx_min
+
+// Daily levels (PDH/PDL/PDC) + Stoic HCOM/LCOM
+[d_close, d_high, d_low] = request.security(syminfo.tickerid, "D", [close[1], high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+var float hcom = na
+var float lcom = na
+new_month = ta.change(month(time)) != 0
+if new_month
+    hcom := d_close
+    lcom := d_close
+else
+    hcom := na(hcom) ? d_close : (d_close > hcom ? d_close : hcom)
+    lcom := na(lcom) ? d_close : (d_close < lcom ? d_close : lcom)
+
+pdh = d_high
+pdl = d_low
+
+sma20  = ta.sma(close, 20)
+sma200 = ta.sma(close, 200)
+
+p1_long  = not na(lcom) and math.abs(close - lcom) <= atr * 1.0
+p1_short = not na(hcom) and math.abs(close - hcom) <= atr * 1.0
+p2_long  = sma20 > sma200 and close > sma20
+p2_short = sma20 < sma200 and close < sma20
+p3_long  = math.abs(close - pdl) <= atr * atr_mult_p3
+p3_short = math.abs(close - pdh) <= atr * atr_mult_p3
+
+day_range = pdh - pdl
+p4_long  = close >= pdl + day_range * fib_low  and close <= pdl + day_range * fib_high
+p4_short = close >= pdh - day_range * fib_high and close <= pdh - day_range * fib_low
+
+score_long  = (p1_long  ? 1 : 0) + (p2_long  ? 1 : 0) + (p3_long  ? 1 : 0) + (p4_long  ? 1 : 0)
+score_short = (p1_short ? 1 : 0) + (p2_short ? 1 : 0) + (p3_short ? 1 : 0) + (p4_short ? 1 : 0)
+
+// PP-ST
+float ph = ta.pivothigh(prd, prd)
+float pl = ta.pivotlow(prd, prd)
+
+var float center = na
+float lastpp = not na(ph) ? ph : not na(pl) ? pl : na
+if not na(lastpp)
+    center := na(center) ? lastpp : (center * 2 + lastpp) / 3
+
+float Up = center - Factor * atr
+float Dn = center + Factor * atr
+
+var float TUp   = na
+var float TDown = na
+var int   Trend = 1
+
+TUp   := nz(close[1]) > nz(TUp[1])   ? math.max(Up, nz(TUp[1]))   : Up
+TDown := nz(close[1]) < nz(TDown[1]) ? math.min(Dn, nz(TDown[1])) : Dn
+Trend := close > nz(TDown[1]) ? 1 : close < nz(TUp[1]) ? -1 : nz(Trend[1], 1)
+
+float TrailSL = Trend == 1 ? TUp : TDown
+
+// Liquidity Sweep
+float recent_swing_high = ta.highest(high, sweep_lookback)
+float recent_swing_low  = ta.lowest(low,  sweep_lookback)
+
+bool sweep_long  = low  < recent_swing_low[1]  and close > recent_swing_low[1]  and (recent_swing_low[1]  - low)  >= atr * sweep_wick_atr
+bool sweep_short = high > recent_swing_high[1] and close < recent_swing_high[1] and (high - recent_swing_high[1]) >= atr * sweep_wick_atr
+
+var int  sweep_long_bars  = 0
+var int  sweep_short_bars = 0
+sweep_long_bars  := sweep_long  ? 3 : math.max(sweep_long_bars  - 1, 0)
+sweep_short_bars := sweep_short ? 3 : math.max(sweep_short_bars - 1, 0)
+bool sweep_long_active  = use_sweep and sweep_long_bars  > 0
+bool sweep_short_active = use_sweep and sweep_short_bars > 0
+
+// Bias intraday VWAP + EMA
+bool vwap_bull = not use_vwap_bias or close > vwap_v
+bool vwap_bear = not use_vwap_bias or close < vwap_v
+bool ema_bull  = not use_ema_filter or close > ema_i
+bool ema_bear  = not use_ema_filter or close < ema_i
+
+// KillZones (heures UTC)
+h = hour(time, "UTC")
+bool in_london = h >= kz_london_start and h < kz_london_end
+bool in_ny     = h >= kz_ny_start     and h < kz_ny_end
+bool in_asia   = h >= 0               and h < 6
+bool in_killzone = not use_killzones or in_london or in_ny or (allow_asia and in_asia)
+
+// SIGNAUX
+bool ltf_long_trigger  = Trend ==  1 and nz(Trend[1]) == -1
+bool ltf_short_trigger = Trend == -1 and nz(Trend[1]) ==  1
+
+bool buy_signal   = ltf_long_trigger  and vwap_bull and ema_bull and trending and vol_ok and in_killzone
+bool short_signal = allow_short and ltf_short_trigger and vwap_bear and ema_bear and trending and vol_ok and in_killzone
+
+// RISK
+var float peak_eq = 0.0
+peak_eq := math.max(peak_eq, strategy.equity)
+float current_dd_pct = peak_eq > 0 ? (peak_eq - strategy.equity) / peak_eq * 100 : 0
+bool throttled = current_dd_pct > dd_throttle
+
+float stoic_boost_long  = stoic_boost_enabled ? 1.0 + (score_long  * 0.15) : 1.0
+float stoic_boost_short = stoic_boost_enabled ? 1.0 + (score_short * 0.15) : 1.0
+float sw_boost_long     = sweep_long_active  ? sweep_qty_boost : 1.0
+float sw_boost_short    = sweep_short_active ? sweep_qty_boost : 1.0
+
+float size_factor_long  = (throttled ? throttle_factor : 1.0) * stoic_boost_long  * sw_boost_long
+float size_factor_short = (throttled ? throttle_factor : 1.0) * stoic_boost_short * sw_boost_short
+
+float effective_risk_long  = math.min(risk_pct * size_factor_long,  max_risk_cap)
+float effective_risk_short = math.min(risk_pct * size_factor_short, max_risk_cap)
+
+float risk_cash_long  = strategy.equity * (effective_risk_long  / 100.0)
+float risk_cash_short = strategy.equity * (effective_risk_short / 100.0)
+float stop_dist = atr * atr_stop_mult
+float qty_long  = stop_dist > 0 ? risk_cash_long  / stop_dist : na
+float qty_short = stop_dist > 0 ? risk_cash_short / stop_dist : na
+
+// EXECUTION : entrée + SL fixe + TP fixe (R:R 2:1)
+float long_stop  = close - stop_dist
+float long_tp    = close + stop_dist * rr_target
+float short_stop = close + stop_dist
+float short_tp   = close - stop_dist * rr_target
+
+if buy_signal and strategy.position_size <= 0
+    if strategy.position_size < 0
+        strategy.close("Short", comment="Cover")
+    strategy.entry("Long", strategy.long, qty=qty_long)
+
+if short_signal and strategy.position_size >= 0
+    if strategy.position_size > 0
+        strategy.close("Long", comment="Close")
+    strategy.entry("Short", strategy.short, qty=qty_short)
+
+// SL / TP / Reverse exit
+if strategy.position_size > 0
+    strategy.exit("L-Exit", "Long", stop=long_stop, limit=long_tp)
+if strategy.position_size < 0
+    strategy.exit("S-Exit", "Short", stop=short_stop, limit=short_tp)
+
+// Exit sur reverse PP-ST si pas déjà sorti
+if strategy.position_size > 0 and Trend == -1 and nz(Trend[1]) == 1
+    strategy.close("Long", comment="RevExitL")
+if strategy.position_size < 0 and Trend == 1 and nz(Trend[1]) == -1
+    strategy.close("Short", comment="RevExitS")
+
+// VISUALISATION
+color trend_col = Trend == 1 ? color.new(#22c55e, 0) : color.new(#ef4444, 0)
+plot(TrailSL,  "PP-ST", color=trend_col, linewidth=2)
+plot(vwap_v,   "VWAP",  color=color.new(#a855f7, 0), linewidth=2)
+plot(ema_i,    "EMA",   color=color.new(#f97316, 30), linewidth=1)
+
+bgcolor(not in_killzone and use_killzones ? color.new(color.gray, 90) : na, title="Hors killzone")
+bgcolor(not trending  ? color.new(#fbbf24, 92) : na, title="Pas trend")
+bgcolor(throttled     ? color.new(#ef4444, 92) : na, title="DD Throttle")
+bgcolor(sweep_long_active  ? color.new(#22c55e, 88) : na, title="SWEEP L")
+bgcolor(sweep_short_active ? color.new(#ef4444, 88) : na, title="SWEEP S")
+
+plotshape(sweep_long,  "Sweep L", shape.diamond, location.belowbar, color.new(#3b82f6, 0), size=size.tiny)
+plotshape(sweep_short, "Sweep S", shape.diamond, location.abovebar, color.new(#fbbf24, 0), size=size.tiny)
+plotshape(buy_signal,   "Buy",   shape.labelup,   location.belowbar, color.new(#22c55e, 0), text="L", textcolor=color.black, size=size.small)
+plotshape(short_signal, "Short", shape.labeldown, location.abovebar, color.new(#ef4444, 0), text="S", textcolor=color.white, size=size.small)

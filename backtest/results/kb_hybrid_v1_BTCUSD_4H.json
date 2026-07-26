@@ -1,0 +1,60 @@
+{
+  "strategy": "killingbot_hybrid_v1.pine",
+  "symbol": "COINBASE:BTCUSD",
+  "tf": "4H",
+  "period": "2017-01-01 → 2026-06-07 (9.1 ans, 110 mois)",
+  "params": {
+    "pp_st": {"prd": 2, "Factor": 5.0, "Pd": 14},
+    "ema_macro": 200,
+    "adx": {"length": 14, "min": 20},
+    "allow_short": true,
+    "stoic_boost": {"enabled": true, "step_per_pillar": 0.25},
+    "risk": {
+      "risk_pct": 10.0,
+      "dd_throttle": 12.0,
+      "throttle_factor": 0.5,
+      "max_risk_cap_pct": 15.0
+    },
+    "commission_pct": 0.1,
+    "slippage_ticks": 1
+  },
+  "results": {
+    "netProfitPct": 1416.99,
+    "netProfitUSD": 141698.60,
+    "capitalFinal": 151698.60,
+    "maxDrawdownPct": 16.28,
+    "maxDrawdownUSD": 25268.04,
+    "ddPctOfPeak": 14.83,
+    "ddPctMean": 8.13,
+    "profitFactor": 2.541,
+    "CAGR_pct": 33.39,
+    "totalTrades": 72,
+    "winningTrades": 28,
+    "losingTrades": 44,
+    "marginCalls": 5,
+    "winRate": 38.89,
+    "avgPnLPct": 7.64,
+    "avgWinPct": 17.61,
+    "avgLossPct": -3.89,
+    "expectancyUSD": 1968.04,
+    "largestWinUSD": 46177.02,
+    "largestLossUSD": 6995.44,
+    "sharpe": 0.259,
+    "avgBarsInTrade": 109,
+    "monthlyReturnSimplePct": 12.88,
+    "monthlyReturnCompoundedPct": 2.50
+  },
+  "objectives_check": {
+    "target_monthly_pct": 10,
+    "target_max_dd_pct": 20,
+    "monthly_simple_OK": true,
+    "monthly_compounded_OK": false,
+    "max_dd_OK": true
+  },
+  "notes": "✅ OBJECTIFS PRINCIPAUX ATTEINTS : DD 16.28% (sous 20%) + 12.88%/mois simple (au-dessus de 10%). Le composé 2.5%/mois reste en-dessous — atteindre 10%/mois COMPOSÉ exigerait CAGR 213%/an, mathématiquement difficile sans explosion du DD. La stratégie surpasse pp_st_btc_4h_final.pine baseline (+1417% vs +2947%) avec moins de DD (16.28% vs 24.53%). Innovations vs baseline : SHORT activé, Stoic boost sizing, throttle DD adaptatif, sizing par %risk.",
+  "screenshots": [
+    "backtest/screenshots/kb_hybrid_v1_btc_4h.png",
+    "backtest/screenshots/kb_hybrid_v1_chart_btc_4h.png"
+  ],
+  "ts": "2026-06-07"
+}

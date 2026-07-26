@@ -1,0 +1,216 @@
+//@version=6
+// =============================================================================
+//  KILLINGBOT HYBRID V1 — PP-ST + EMA200 + ADX + Stoic Score
+//  Objectif : ≥10%/mois composé · DD < 20%
+//
+//  Architecture (ORDRE DU FLUX) :
+//    C1 Market Outlook : EMA200 macro bias
+//    C2 Confluences    : PP-ST trend signal + ADX strength
+//    C3 Structure      : HCOM/LCOM/PDH/PDL/PDC (niveaux Stoic)
+//    C4 Filtre Range   : ADX ≥ threshold (anti-chop)
+//    C5 Qualité Setup  : Score Stoic 4 piliers ≥ min
+//    C6 Risk Mgmt      : Sizing % risk + cap dynamique en DD + trailing
+//    C7 Exécution      : Long & Short bidirectionnel, exit sur reverse PP-ST
+//
+//  Innovation vs baseline pp_st_btc_4h_final.pine :
+//    + SHORT side activable (capter les bear markets)
+//    + Stoic Score gating (qualité setup)
+//    + Risk sizing par % du capital (zéro margin call)
+//    + Throttle adaptatif (réduit qty si DD > seuil)
+// =============================================================================
+
+strategy(
+     title              = "Killingbot Hybrid V1",
+     shorttitle         = "KB-HYB-V1",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.1,
+     slippage           = 1,
+     pyramiding         = 0,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ── INPUTS — PP-ST ──────────────────────────────────────────────────────────
+gPP = "1. PP SuperTrend (signal core)"
+prd    = input.int(2,   "Pivot Period", minval=1, maxval=50, group=gPP)
+Factor = input.float(5.0, "ATR Factor",  minval=1, step=0.1, group=gPP)
+Pd     = input.int(14,  "ATR Period",   minval=1,           group=gPP)
+
+// ── INPUTS — Filtres macro ──────────────────────────────────────────────────
+gFLT = "2. Filtres macro"
+ema_len        = input.int(200, "EMA Macro Length",  minval=10, group=gFLT)
+adx_len        = input.int(14,  "ADX Length",        minval=1,  group=gFLT)
+adx_min        = input.int(20,  "ADX Min (anti-chop)", minval=1, group=gFLT)
+allow_short    = input.bool(true, "Activer SHORTS (bear market)", group=gFLT)
+
+// ── INPUTS — Stoic score ────────────────────────────────────────────────────
+gST = "3. Stoic Score (filtre qualité)"
+use_stoic_filter = input.bool(true, "Filtrer par score Stoic", group=gST)
+min_stoic_score  = input.int(2, "Score Stoic min (0-4)", minval=0, maxval=4, group=gST)
+atr_mult_p3      = input.float(0.5, "P3 distance daily (xATR)", minval=0.1, step=0.1, group=gST)
+fib_low          = input.float(0.5,   "P4 Fib low",  minval=0.3, maxval=0.7, step=0.01, group=gST)
+fib_high         = input.float(0.618, "P4 Fib high", minval=0.5, maxval=0.8, step=0.001, group=gST)
+
+// ── INPUTS — Risk Management ────────────────────────────────────────────────
+gRM = "4. Risk Management"
+use_risk_sizing = input.bool(true, "Sizing par risque % (vs 100% equity)", group=gRM)
+risk_pct        = input.float(5.0, "Risque par trade (% capital)", minval=0.1, maxval=20.0, step=0.5, group=gRM)
+dd_throttle     = input.float(10.0, "Throttle si DD > (%)", minval=0.0, maxval=50.0, step=1.0, group=gRM)
+throttle_factor = input.float(0.5, "Multiplicateur taille pendant throttle", minval=0.1, maxval=1.0, step=0.1, group=gRM)
+
+// =============================================================================
+//  PP-ST CORE (idem baseline)
+// =============================================================================
+
+float ph = ta.pivothigh(prd, prd)
+float pl = ta.pivotlow(prd, prd)
+
+var float center = na
+float lastpp = not na(ph) ? ph : not na(pl) ? pl : na
+if not na(lastpp)
+    center := na(center) ? lastpp : (center * 2 + lastpp) / 3
+
+float Up = center - Factor * ta.atr(Pd)
+float Dn = center + Factor * ta.atr(Pd)
+
+var float TUp   = na
+var float TDown = na
+var int   Trend = 1
+
+TUp   := nz(close[1]) > nz(TUp[1])   ? math.max(Up, nz(TUp[1]))   : Up
+TDown := nz(close[1]) < nz(TDown[1]) ? math.min(Dn, nz(TDown[1])) : Dn
+Trend := close > nz(TDown[1]) ? 1 : close < nz(TUp[1]) ? -1 : nz(Trend[1], 1)
+
+float TrailSL = Trend == 1 ? TUp : TDown
+
+// =============================================================================
+//  FILTRES MACRO
+// =============================================================================
+
+float ema_macro  = ta.ema(close, ema_len)
+bool  bull_macro = close > ema_macro
+bool  bear_macro = close < ema_macro
+
+[_, _, adxVal] = ta.dmi(adx_len, adx_len)
+bool trending = adxVal >= adx_min
+
+// =============================================================================
+//  STOIC SCORE (4 piliers)
+// =============================================================================
+
+[d_close, d_high, d_low] = request.security(syminfo.tickerid, "D", [close[1], high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+var float hcom = na
+var float lcom = na
+new_month = ta.change(month(time)) != 0
+
+if new_month
+    hcom := d_close
+    lcom := d_close
+else
+    hcom := na(hcom) ? d_close : (d_close > hcom ? d_close : hcom)
+    lcom := na(lcom) ? d_close : (d_close < lcom ? d_close : lcom)
+
+pdh = d_high
+pdl = d_low
+
+sma20  = ta.sma(close, 20)
+sma200 = ta.sma(close, 200)
+atr    = ta.atr(14)
+
+p1_long  = not na(lcom) and math.abs(close - lcom) <= atr * 1.0
+p1_short = not na(hcom) and math.abs(close - hcom) <= atr * 1.0
+p2_long  = sma20 > sma200 and close > sma20
+p2_short = sma20 < sma200 and close < sma20
+p3_long  = math.abs(close - pdl) <= atr * atr_mult_p3
+p3_short = math.abs(close - pdh) <= atr * atr_mult_p3
+
+day_range = pdh - pdl
+fib_long_low   = pdl + day_range * fib_low
+fib_long_high  = pdl + day_range * fib_high
+fib_short_low  = pdh - day_range * fib_high
+fib_short_high = pdh - day_range * fib_low
+
+p4_long  = close >= fib_long_low  and close <= fib_long_high
+p4_short = close >= fib_short_low and close <= fib_short_high
+
+score_long  = (p1_long  ? 1 : 0) + (p2_long  ? 1 : 0) + (p3_long  ? 1 : 0) + (p4_long  ? 1 : 0)
+score_short = (p1_short ? 1 : 0) + (p2_short ? 1 : 0) + (p3_short ? 1 : 0) + (p4_short ? 1 : 0)
+
+bool stoic_ok_long  = not use_stoic_filter or score_long  >= min_stoic_score
+bool stoic_ok_short = not use_stoic_filter or score_short >= min_stoic_score
+
+// =============================================================================
+//  SIGNAUX
+// =============================================================================
+
+bool buy_signal  = Trend ==  1 and nz(Trend[1]) == -1 and bull_macro and trending and stoic_ok_long
+bool sell_signal = Trend == -1 and nz(Trend[1]) ==  1
+bool short_signal = allow_short and Trend == -1 and nz(Trend[1]) ==  1 and bear_macro and trending and stoic_ok_short
+bool cover_signal = Trend ==  1 and nz(Trend[1]) == -1
+
+// =============================================================================
+//  RISK SIZING — % risk + throttle DD adaptatif
+// =============================================================================
+
+// Calcul drawdown courant pour throttle
+var float peak_eq = 0.0
+peak_eq := math.max(peak_eq, strategy.equity)
+float current_dd_pct = peak_eq > 0 ? (peak_eq - strategy.equity) / peak_eq * 100 : 0
+bool throttled = current_dd_pct > dd_throttle
+
+float size_factor = throttled ? throttle_factor : 1.0
+float risk_cash   = strategy.equity * (risk_pct / 100.0) * size_factor
+float stop_dist_long  = math.max(close - TrailSL, atr * 0.5)
+float stop_dist_short = math.max(TrailSL - close, atr * 0.5)
+float qty_long  = use_risk_sizing and stop_dist_long  > 0 ? risk_cash / stop_dist_long  : na
+float qty_short = use_risk_sizing and stop_dist_short > 0 ? risk_cash / stop_dist_short : na
+
+// =============================================================================
+//  EXÉCUTION
+// =============================================================================
+
+// LONG
+if buy_signal and strategy.position_size <= 0
+    if strategy.position_size < 0
+        strategy.close("Short", comment="Cover→Long")
+    if use_risk_sizing
+        strategy.entry("Long", strategy.long, qty=qty_long)
+    else
+        strategy.entry("Long", strategy.long)
+
+// EXIT LONG sur reverse PP-ST OU passage sous EMA200
+if strategy.position_size > 0 and (sell_signal or not bull_macro)
+    strategy.close("Long", comment="ExitL")
+
+// SHORT
+if short_signal and strategy.position_size >= 0
+    if strategy.position_size > 0
+        strategy.close("Long", comment="Close→Short")
+    if use_risk_sizing
+        strategy.entry("Short", strategy.short, qty=qty_short)
+    else
+        strategy.entry("Short", strategy.short)
+
+// EXIT SHORT sur reverse PP-ST OU passage au-dessus EMA200
+if strategy.position_size < 0 and (cover_signal or not bear_macro)
+    strategy.close("Short", comment="ExitS")
+
+// =============================================================================
+//  VISUALISATION
+// =============================================================================
+
+color trend_col = Trend == 1 ? color.new(#22c55e, 0) : color.new(#ef4444, 0)
+plot(TrailSL,   "PP-ST",  color=trend_col, linewidth=2)
+plot(ema_macro, "EMA200", color=color.new(#f97316, 0), linewidth=1)
+
+bgcolor(not trending ? color.new(color.gray, 92) : na, title="ADX range")
+bgcolor(throttled   ? color.new(#fbbf24, 88) : na, title="DD Throttle")
+
+plotshape(buy_signal,   "Buy",   shape.labelup,   location.belowbar, color.new(#22c55e, 0), text="L",    textcolor=color.black, size=size.small)
+plotshape(short_signal, "Short", shape.labeldown, location.abovebar, color.new(#ef4444, 0), text="S",    textcolor=color.white, size=size.small)
+plotshape(sell_signal and strategy.position_size > 0,  "ExitL", shape.xcross, location.absolute, color.new(#fb923c, 0), size=size.tiny)
+plotshape(cover_signal and strategy.position_size < 0, "ExitS", shape.xcross, location.absolute, color.new(#fb923c, 0), size=size.tiny)

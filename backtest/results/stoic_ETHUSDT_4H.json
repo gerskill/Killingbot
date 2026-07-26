@@ -1,0 +1,18 @@
+{
+  "symbol": "BINANCE:ETHUSDT",
+  "tf": "4H",
+  "period": "2017-08-17 → 2026-06-07",
+  "results": {
+    "netProfitPct": -2.62,
+    "maxDrawdownPct": 13.73,
+    "profitFactor": 0.921,
+    "totalTrades": 42,
+    "winningTrades": 15,
+    "losingTrades": 27,
+    "winRate": 35.71,
+    "expectancyUSD": -6.23,
+    "sharpe": -0.139
+  },
+  "notes": "ETH 4H : pas d'edge (PF 0.92 < 1, perte légère). 42 trades sur 9 ans, échantillon valable. ETH a peut-être des caractéristiques différentes de BTC : plus volatil, moins de respect des niveaux mensuels institutionnels. Ne pas trader ETH avec ce protocole. Tester sur Daily ou avec paramètres ajustés.",
+  "ts": "2026-06-07"
+}

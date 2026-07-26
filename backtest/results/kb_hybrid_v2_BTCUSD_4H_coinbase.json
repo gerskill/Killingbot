@@ -1,0 +1,75 @@
+{
+  "strategy": "killingbot_hybrid_v2.pine",
+  "symbol": "COINBASE:BTCUSD",
+  "tf": "4H",
+  "period": "2017-01-01 → 2026-06-07 (9.1 ans, 110 mois)",
+  "x_factor": "Liquidity Sweep & Reclaim Detector + TP partiel 2.5R + BE protection",
+  "params": {
+    "pp_st": {"prd": 2, "Factor": 5.0, "Pd": 14},
+    "ema_macro": 200,
+    "adx": {"length": 14, "min": 20},
+    "allow_short": true,
+    "sweep": {
+      "enabled": true,
+      "required": false,
+      "lookback_bars": 20,
+      "wick_min_xatr": 0.3,
+      "qty_boost": 1.5,
+      "active_window_bars": 3
+    },
+    "stoic_boost": {"enabled": true, "step_per_pillar": 0.25},
+    "risk": {
+      "risk_pct": 10.0,
+      "dd_throttle": 12.0,
+      "throttle_factor": 0.5,
+      "max_risk_cap_pct": 17.0
+    },
+    "smoothing": {
+      "tp1_r_multiple": 2.5,
+      "partial_pct": 30,
+      "move_be_after_tp1": true
+    }
+  },
+  "results": {
+    "netProfitPct": 1535.35,
+    "netProfitUSD": 153534.62,
+    "capitalFinal": 163534.62,
+    "maxDrawdownPct": 16.28,
+    "maxDrawdownUSD": 26835.61,
+    "profitFactor": 2.493,
+    "CAGR_pct": 19.04,
+    "totalTrades": 87,
+    "winningTrades": 43,
+    "losingTrades": 44,
+    "winRate": 49.43,
+    "avgPnLPct": 11.81,
+    "avgWinPct": 21.88,
+    "avgLossPct": -3.89,
+    "expectancyUSD": 1764.77,
+    "largestWinUSD": 36297.22,
+    "largestLossUSD": 7855.33,
+    "sharpe": 0.327,
+    "avgBarsInTrade": 109,
+    "monthlyReturnSimplePct": 13.96,
+    "monthlyReturnCompoundedPct": 2.57
+  },
+  "objectives_check": {
+    "target_monthly_pct": 5,
+    "target_max_dd_pct": 20,
+    "min_backtest_years": 5,
+    "monthly_OK": true,
+    "max_dd_OK": true,
+    "duration_OK": true,
+    "growth_curve_smooth": true
+  },
+  "comparison_vs_v1": {
+    "net_pct": "+1535 vs +1417 (+118pp)",
+    "dd_pct": "16.28 vs 16.28 (égal)",
+    "sharpe": "0.327 vs 0.259 (+26%)",
+    "wr": "49.43% vs 38.89% (+10.5pp)",
+    "trades": "87 vs 72 (+15 trades)",
+    "comment": "V2 strictement supérieur sur tous les axes : plus de gain, courbe plus lisse (Sharpe), plus équilibré (WR)."
+  },
+  "notes": "X-Factor Liquidity Sweep + TP1 à 2.5R + BE protection : la triple combinaison donne +118pp vs V1 avec DD identique. La courbe d'équité est très progressive (visible sur kb_hybrid_v2_btc_4h_coinbase.png).",
+  "ts": "2026-06-07"
+}

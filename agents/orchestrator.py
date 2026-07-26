@@ -59,10 +59,15 @@ def run():
             _final_report(mem)
             return
 
-    # ── Rounds suivants : suggestions MemoryAgent ─────────────────────────────
+    # ── Rounds suivants : suggestions heuristiques + génération LLM ───────────
+    # Les deux tournent chaque round : l'heuristique couvre les ajustements
+    # connus (RR, filtres), le LLM cherche des combinaisons jamais codées.
     for round_n in range(1, MAX_ROUNDS + 1):
-        log_comm(f"Round {round_n} — demande suggestions à MemoryAgent")
+        log_comm(f"Round {round_n} — suggestions MemoryAgent (heuristique)")
         explorer.explore_suggested()
+
+        log_comm(f"Round {round_n} — génération LLM (Claude)")
+        explorer.explore_suggested_llm(n=3)
 
         mem.write_best_report()
         best = mem.get_best(1)
@@ -77,7 +82,27 @@ def run():
         else:
             log_comm(f"Round {round_n} — aucun résultat")
 
+    _stability_check(mem, explorer)
     _final_report(mem)
+
+
+def _stability_check(mem: MemoryAgent, explorer: StrategyExplorer):
+    """Monte Carlo sur le gagnant final avant de le déclarer fiable."""
+    best = mem.get_best(1)
+    if not best:
+        return
+    top = best[0]
+    log_comm(f"Vérification stabilité (Monte Carlo) sur {top['name']}...")
+    clean_params = {k: v for k, v in top["params"].items() if not k.startswith("_")}
+    result = explorer.stability_check(clean_params)
+    if "error" in result:
+        log_comm(f"Stability check échoué : {result['error']}")
+        return
+    stab = result["mc_stability_pct_avg"]
+    verdict = "✅ ROBUSTE" if stab >= 70 else ("⚠️ FRAGILE" if stab >= 40 else "❌ OVERFIT PROBABLE")
+    log_comm(f"Stabilité {top['name']} : {stab:.0f}% des perturbations tiennent la perf → {verdict}")
+    with open(VAULT / "AGENT_LOG.md", "a") as f:
+        f.write(f"\n**Stability check** `{top['name']}` : {stab:.0f}% stable → {verdict}\n")
 
 
 def _final_report(mem: MemoryAgent):

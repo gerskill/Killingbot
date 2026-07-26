@@ -1,0 +1,113 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════
+// KB_STRUCTURE_VWAP v1 — No-EMA Strategy (anti boîte-noire)
+// ─────────────────────────────────────────────────────────────
+// Réponse au tweet DaveTradesOpts (2026-07-04) : "pas d'EMA,
+// impossible à reverse-engineer". Ici : ZÉRO EMA, 100% ouvert.
+//
+// Architecture (7-layer Killingbot) :
+//   L1 BIAS      : prix vs VWAP journalier (au-dessus = long only)
+//   L3 STRUCTURE : Break of Structure (cassure pivot high/low)
+//   L2 CONFLUENCE: volume > moyenne x mult (conviction réelle)
+//   L4 RANGE     : ATR% min/max (évite range mort + chaos)
+//   L6 RISK      : SL structurel (pivot opposé), TP scale 1.5R/3R
+//   L7 EXEC      : alertes webhook-ready
+//
+// Params exposés → mutables par journal_agent (1-2 par itération).
+// Status: PENDING_VALIDATION — backtest requis avant paper.
+// ═══════════════════════════════════════════════════════════════
+
+strategy("KB Structure×VWAP v1 — No EMA",
+         overlay=true,
+         shorttitle="KB_SVWAP",
+         initial_capital=25000,
+         default_qty_type=strategy.percent_of_equity,
+         default_qty_value=10,
+         commission_type=strategy.commission.percent,
+         commission_value=0.1,
+         slippage=2)
+
+// ─── PARAMETERS (tous mutables par la boucle)
+piv_len      = input.int(5,    "Pivot Length",       minval=2,  group="Structure")
+vol_len      = input.int(20,   "Volume SMA Length",  minval=5,  group="Volume")
+vol_mult     = input.float(1.3, "Volume Mult",       minval=1.0, step=0.1, group="Volume")
+atr_len      = input.int(14,   "ATR Period",         minval=1,  group="ATR")
+atr_min_pct  = input.float(0.3, "ATR Min %",         minval=0.1, step=0.1, group="ATR")
+atr_max_pct  = input.float(2.5, "ATR Max %",         minval=0.5, step=0.1, group="ATR")
+rr_tp1       = input.float(1.5, "TP1 RR",            minval=0.5, step=0.1, group="Risk")
+rr_tp2       = input.float(3.0, "TP2 RR",            minval=1.0, step=0.1, group="Risk")
+sl_buf_atr   = input.float(0.5, "SL Buffer (xATR)",  minval=0.0, step=0.1, group="Risk")
+cooldown     = input.int(4,    "Cooldown Bars",      minval=0,  group="Risk")
+
+// ─── L1 : BIAS — VWAP journalier (pas d'EMA, ancré session)
+float dvwap = ta.vwap(hlc3)
+bool bias_long  = close > dvwap
+bool bias_short = close < dvwap
+
+// ─── L3 : STRUCTURE — derniers pivots confirmés
+float ph = ta.pivothigh(high, piv_len, piv_len)
+float pl = ta.pivotlow(low, piv_len, piv_len)
+
+var float last_ph = na
+var float last_pl = na
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+// Break of Structure : close casse le dernier pivot (pas juste une mèche)
+bool bos_up   = not na(last_ph) and close > last_ph and close[1] <= last_ph
+bool bos_down = not na(last_pl) and close < last_pl and close[1] >= last_pl
+
+// ─── L2 : CONFLUENCE — volume de conviction
+float vol_sma = ta.sma(volume, vol_len)
+bool vol_ok = volume > vol_sma * vol_mult
+
+// ─── L4 : RANGE FILTER — volatilité exploitable
+float atr_val = ta.atr(atr_len)
+float atr_pct = atr_val / close * 100
+bool vola_ok = atr_pct >= atr_min_pct and atr_pct <= atr_max_pct
+
+// ─── Cooldown anti-surtrading
+var int last_entry_bar = na
+bool cooldown_ok = na(last_entry_bar) or (bar_index - last_entry_bar) >= cooldown
+
+// ─── SIGNAUX
+bool long_sig  = bos_up and bias_long and vol_ok and vola_ok and cooldown_ok
+bool short_sig = bos_down and bias_short and vol_ok and vola_ok and cooldown_ok
+
+// ─── L6 : RISK — SL structurel (pivot opposé + buffer ATR)
+if long_sig and strategy.position_size == 0
+    float sl = last_pl - sl_buf_atr * atr_val
+    float risk = close - sl
+    if risk > 0
+        last_entry_bar := bar_index
+        strategy.entry("Long", strategy.long, alert_message='{"setup":"KB_SVWAP","dir":"LONG","ticker":"{{ticker}}","price":{{close}},"tf":"{{interval}}"}')
+        strategy.exit("L-TP1", "Long", stop=sl, limit=close + risk * rr_tp1, qty_percent=50)
+        strategy.exit("L-TP2", "Long", stop=sl, limit=close + risk * rr_tp2, qty_percent=50)
+
+if short_sig and strategy.position_size == 0
+    float sl = last_ph + sl_buf_atr * atr_val
+    float risk = sl - close
+    if risk > 0
+        last_entry_bar := bar_index
+        strategy.entry("Short", strategy.short, alert_message='{"setup":"KB_SVWAP","dir":"SHORT","ticker":"{{ticker}}","price":{{close}},"tf":"{{interval}}"}')
+        strategy.exit("S-TP1", "Short", stop=sl, limit=close - risk * rr_tp1, qty_percent=50)
+        strategy.exit("S-TP2", "Short", stop=sl, limit=close - risk * rr_tp2, qty_percent=50)
+
+// Sortie de secours : le biais VWAP s'inverse contre la position
+if strategy.position_size > 0 and bias_short
+    strategy.close("Long", comment="VWAP flip")
+if strategy.position_size < 0 and bias_long
+    strategy.close("Short", comment="VWAP flip")
+
+// ─── L7 : VISUALISATION + ALERTES
+plot(dvwap, color=color.new(color.orange, 0), linewidth=2, title="VWAP")
+plot(last_ph, color=color.new(color.red, 60), style=plot.style_linebr, title="Pivot High")
+plot(last_pl, color=color.new(color.lime, 60), style=plot.style_linebr, title="Pivot Low")
+bgcolor(vola_ok ? na : color.new(color.gray, 94), title="Range mort / chaos")
+
+plotshape(long_sig ? low : na, "BOS Long", shape.labelup, location.belowbar,
+          color.new(color.lime, 0), text="BOS▲", textcolor=color.black, size=size.small)
+plotshape(short_sig ? high : na, "BOS Short", shape.labeldown, location.abovebar,
+          color.new(color.red, 0), text="BOS▼", textcolor=color.white, size=size.small)

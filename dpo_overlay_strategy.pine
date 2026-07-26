@@ -1,0 +1,326 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// © Killingbot — Claude Trading Architect
+// Based on: Dynamic Price Oscillator Overlay by Zeiierman
+// Strategy version — multi-market, multi-timeframe ready
+
+//@version=6
+strategy(
+     title            = "DPO Overlay Strategy [Killingbot]",
+     shorttitle        = "DPO-S",
+     overlay           = true,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.05,
+     slippage          = 2,
+     pyramiding        = 0,
+     calc_on_every_tick = false
+ )
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 1 — INPUTS & PARAMÈTRES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// — Oscillateur
+grp1 = "── DPO Overlay ──"
+i_length       = input.int(20,  "Length",         minval=5,  maxval=200, group=grp1, tooltip="Lookback principal : oscillateur + BB")
+i_smooth       = input.int(5,   "Smoothing",       minval=1,  maxval=50,  group=grp1, tooltip="Lissage EMA de l'oscillateur (réactivité)")
+i_anchor       = input.int(50,  "Anchor Length",   minval=5,  maxval=500, group=grp1, tooltip="EMA anchor qui colle l'oscillateur au prix")
+
+// — Signaux
+grp2 = "── Signaux ──"
+i_sig_cross    = input.bool(true,  "Mean Cross",          group=grp2, tooltip="Long/Short sur croisement de la Dynamic Mean")
+i_sig_retest   = input.bool(true,  "Mean Retest",         group=grp2, tooltip="Entrée sur retest de la Mean après un cross")
+i_sig_bb       = input.bool(false, "BB Breakout Filter",  group=grp2, tooltip="Exige un close > BB std avant entrée (momentum confirmé)")
+
+// — Risk Management
+grp3 = "── Risk Management ──"
+i_sl_mult      = input.float(1.5, "SL ATR mult",   minval=0.5, maxval=5.0, step=0.1, group=grp3)
+i_tp_mult      = input.float(3.0, "TP ATR mult",   minval=0.5, maxval=10.0, step=0.1, group=grp3)
+i_atr_len      = input.int(14,    "ATR Length",    minval=5,   maxval=50,   group=grp3)
+i_use_trailing = input.bool(true,  "Trailing Stop (exit on opp. signal)", group=grp3, tooltip="Si activé : sortie sur signal opposé. Sinon : TP/SL fixes ATR.")
+
+// — Filtres
+grp4 = "── Filtres ──"
+i_use_adx      = input.bool(false, "Filtre ADX",    group=grp4)
+i_adx_min      = input.int(20,    "ADX minimum",   minval=10, maxval=50, group=grp4)
+i_use_ema_trend = input.bool(true, "Filtre EMA200", group=grp4, tooltip="Long seulement au-dessus EMA200, Short seulement en-dessous")
+
+// — Visuel
+grp5 = "── Visuel ──"
+i_show_dash    = input.bool(true,  "Dashboard",     group=grp5)
+i_show_bands   = input.bool(true,  "Afficher Bands", group=grp5)
+
+// — Dates
+grp6 = "── Période ──"
+i_start        = input.time(timestamp("2020-01-01"), "Début",  group=grp6)
+i_end          = input.time(timestamp("2099-12-31"), "Fin",    group=grp6)
+in_range       = time >= i_start and time <= i_end
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 2 — MOTEUR DPO OVERLAY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper Bollinger Bands
+bollingerBands(src, len, mult) =>
+    basis = ta.sma(src, len)
+    dev   = mult * ta.stdev(src, len)
+    [basis + dev, basis - dev]
+
+// 1. Composante volatilité (EMA du True Range)
+volAdjPrice = ta.ema(ta.tr(true), i_length)
+
+// 2. Dual momentum
+priceChange = close - close[i_length]
+priceDelta  = close - volAdjPrice
+
+// 3. Oscillateur lissé
+oscillator = ta.ema(math.avg(priceDelta, priceChange), i_smooth)
+
+// 4. Bollinger Bands sur oscillateur (std x1 et x2)
+bbLen = i_length * 5
+[bbHigh,    bbLow]    = bollingerBands(oscillator, bbLen, 1.0)
+[bbHighExp, bbLowExp] = bollingerBands(oscillator, bbLen, 2.0)
+
+// 5. Dynamic Mean = midpoint expanded bands
+mean = math.avg(bbHighExp, bbLowExp)
+
+// 6. Price Anchor + Projection overlay sur le chart
+priceAnchor = ta.ema(close, i_anchor)
+overlayOsc  = priceAnchor + oscillator - mean
+overlayMean = priceAnchor  // = mean projetée = priceAnchor + 0 quand osc == mean
+overlayBBH  = priceAnchor + bbHigh    - mean
+overlayBBL  = priceAnchor + bbLow     - mean
+overlayBBHE = priceAnchor + bbHighExp - mean
+overlayBBLE = priceAnchor + bbLowExp  - mean
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 3 — FILTRES MACRO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+ema200      = ta.ema(close, 200)
+trendBull   = close > ema200
+trendBear   = close < ema200
+
+// ADX
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+adxOk = not i_use_adx or adxVal >= i_adx_min
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 4 — DÉTECTION RANGE
+// (Filtre : pas de trade si ATR très faible → range serré)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atrVal      = ta.atr(i_atr_len)
+atrPct      = atrVal / close * 100
+rangeFilter = atrPct > 0.15  // ATR > 0.15% = marché en mouvement
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 5 — SIGNAUX DE TRADING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Positions relatives oscillateur / mean
+oscAboveMean = oscillator > mean
+oscBelowMean = oscillator < mean
+
+// Croisements
+crossUp   = ta.crossover(oscillator,  mean)
+crossDown = ta.crossunder(oscillator, mean)
+
+// Retest : après un crossUp, l'oscillateur redescend proche de la mean puis remonte
+var bool retestBull = false
+var bool retestBear = false
+nearMean = math.abs(oscillator - mean) < ta.stdev(oscillator, bbLen) * 0.3
+
+if crossUp
+    retestBull := false
+if oscAboveMean and not crossUp
+    if nearMean
+        retestBull := true
+    else if retestBull and oscillator > mean + ta.stdev(oscillator, bbLen) * 0.1
+        retestBull := false  // reset après confirmation
+
+if crossDown
+    retestBear := false
+if oscBelowMean and not crossDown
+    if nearMean
+        retestBear := true
+    else if retestBear and oscillator < mean - ta.stdev(oscillator, bbLen) * 0.1
+        retestBear := false
+
+// BB Breakout momentum confirmation
+bbBreakBull = oscillator > bbHigh
+bbBreakBear = oscillator < bbLow
+
+// Conditions entrée brutes
+rawLong  = (i_sig_cross and crossUp) or (i_sig_retest and retestBull and ta.crossover(oscillator, mean + ta.stdev(oscillator, bbLen) * 0.05))
+rawShort = (i_sig_cross and crossDown) or (i_sig_retest and retestBear and ta.crossunder(oscillator, mean - ta.stdev(oscillator, bbLen) * 0.05))
+
+// Filtre BB breakout optionnel
+bbFilterLong  = not i_sig_bb or bbBreakBull
+bbFilterShort = not i_sig_bb or bbBreakBear
+
+// Filtre tendance EMA200
+trendFilterLong  = not i_use_ema_trend or trendBull
+trendFilterShort = not i_use_ema_trend or trendBear
+
+// Signaux finaux
+sigLong  = rawLong  and bbFilterLong  and trendFilterLong  and adxOk and rangeFilter and in_range
+sigShort = rawShort and bbFilterShort and trendFilterShort and adxOk and rangeFilter and in_range
+
+// Signaux de sortie
+exitLong  = crossDown or (oscillator > bbHighExp)  // opp. signal ou extrême
+exitShort = crossUp   or (oscillator < bbLowExp)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 6 — RISK MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var float entryPrice  = na
+var float slPrice     = na
+var float tpPrice     = na
+var int   lastBarIdx  = na
+
+if sigLong and strategy.position_size == 0
+    entryPrice := close
+    slPrice    := close - atrVal * i_sl_mult
+    tpPrice    := close + atrVal * i_tp_mult
+    lastBarIdx := bar_index
+
+if sigShort and strategy.position_size == 0
+    entryPrice := close
+    slPrice    := close + atrVal * i_sl_mult
+    tpPrice    := close - atrVal * i_tp_mult
+    lastBarIdx := bar_index
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COUCHE 7 — EXÉCUTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if sigLong
+    strategy.entry("Long", strategy.long, comment="DPO↑")
+    if not i_use_trailing
+        strategy.exit("SL/TP Long", "Long", stop=slPrice, limit=tpPrice)
+
+if sigShort
+    strategy.entry("Short", strategy.short, comment="DPO↓")
+    if not i_use_trailing
+        strategy.exit("SL/TP Short", "Short", stop=slPrice, limit=tpPrice)
+
+// Trailing : sortie sur signal opposé
+if i_use_trailing
+    if exitLong  and strategy.position_size > 0
+        strategy.close("Long",  comment="Exit↓")
+    if exitShort and strategy.position_size < 0
+        strategy.close("Short", comment="Exit↑")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUALISATION — Overlay sur chart
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Couleur de l'oscillateur overlay (au-dessus/en-dessous de la mean)
+oscColor = oscillator > mean ? color.new(color.teal, 0) : color.new(color.red, 0)
+
+// Oscillateur overlay
+plot(overlayOsc, "DPO Overlay", color=oscColor, linewidth=2)
+
+// Dynamic Mean (= priceAnchor quand osc == mean)
+plot(overlayMean, "Dynamic Mean", color=color.new(color.white, 40), linewidth=1, style=plot.style_line)
+
+// Bandes BB standard
+p_bbH = plot(i_show_bands ? overlayBBH  : na, "BB High",      color=color.new(color.blue, 60),   linewidth=1)
+p_bbL = plot(i_show_bands ? overlayBBL  : na, "BB Low",       color=color.new(color.blue, 60),   linewidth=1)
+// Bandes BB expanded
+p_bbHE = plot(i_show_bands ? overlayBBHE : na, "BB High Exp", color=color.new(color.orange, 60), linewidth=1)
+p_bbLE = plot(i_show_bands ? overlayBBLE : na, "BB Low Exp",  color=color.new(color.orange, 60), linewidth=1)
+
+// Remplissage bandes
+fill(p_bbH,  p_bbL,  color=color.new(color.blue,   92))
+fill(p_bbHE, p_bbLE, color=color.new(color.orange, 96))
+
+// EMA200
+plot(i_use_ema_trend ? ema200 : na, "EMA 200", color=color.new(color.yellow, 30), linewidth=1)
+
+// Signaux sur chart
+plotshape(sigLong,  "Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime,   0), size=size.small)
+plotshape(sigShort, "Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,    0), size=size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if i_show_dash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 10,
+         bgcolor     = color.new(color.black, 20),
+         border_width = 1,
+         border_color = color.new(color.gray, 60))
+
+    posCol = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
+    oscStr = oscillator > mean ? "▲ BULL" : "▼ BEAR"
+    oscStrCol = oscillator > mean ? color.teal : color.red
+    adxStr = adxOk ? str.tostring(math.round(adxVal, 1)) + " ✓" : str.tostring(math.round(adxVal, 1)) + " ✗"
+    adxCol = adxOk ? color.lime : color.orange
+    trendStr = trendBull ? "▲ Bull" : "▼ Bear"
+    trendCol = trendBull ? color.lime : color.red
+    posStr = strategy.position_size > 0 ? "● LONG" : strategy.position_size < 0 ? "● SHORT" : "○ Flat"
+
+    txt_hdr = color.new(color.white,  0)
+    txt_val = color.new(color.silver, 0)
+    bg_hdr  = color.new(color.navy,  20)
+    bg_val  = color.new(color.black, 40)
+
+    table.cell(dash, 0, 0, "DPO OVERLAY STRATEGY", text_color=txt_hdr, bgcolor=bg_hdr, text_size=size.small)
+    table.cell(dash, 1, 0, "[Killingbot]",          text_color=txt_hdr, bgcolor=bg_hdr, text_size=size.small)
+
+    table.cell(dash, 0, 1, "Momentum",   text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    table.cell(dash, 1, 1, oscStr,       text_color=oscStrCol, bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 2, "Osc/Mean Δ",  text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(math.round(oscillator - mean, 4)), text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 3, "Trend EMA200", text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    table.cell(dash, 1, 3, trendStr,       text_color=trendCol, bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 4, "ADX",   text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    table.cell(dash, 1, 4, adxStr,  text_color=adxCol,  bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 5, "ATR%",  text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    table.cell(dash, 1, 5, str.tostring(math.round(atrPct, 2)) + "%", text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 6, "Position",  text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    table.cell(dash, 1, 6, posStr,      text_color=posCol,  bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 7, "Net P&L",   text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    pnlStr = str.tostring(math.round(strategy.netprofit / strategy.initial_capital * 100, 2)) + "%"
+    pnlCol = strategy.netprofit >= 0 ? color.lime : color.red
+    table.cell(dash, 1, 7, pnlStr, text_color=pnlCol, bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 8, "Win Rate",  text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    wrVal = strategy.wintrades + strategy.losstrades > 0 ? strategy.wintrades / (strategy.wintrades + strategy.losstrades) * 100 : 0.0
+    table.cell(dash, 1, 8, str.tostring(math.round(wrVal, 1)) + "%", text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+
+    table.cell(dash, 0, 9, "BB Extreme",  text_color=txt_val, bgcolor=bg_val, text_size=size.small)
+    bbExtStr = oscillator > bbHighExp ? "⚡ OB" : oscillator < bbLowExp ? "⚡ OS" : "—"
+    bbExtCol = oscillator > bbHighExp ? color.orange : oscillator < bbLowExp ? color.aqua : color.gray
+    table.cell(dash, 1, 9, bbExtStr, text_color=bbExtCol, bgcolor=bg_val, text_size=size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTES JSON WEBHOOK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(sigLong,
+     title   = "DPO — Long Signal",
+     message = '{"strategy":"DPO_Overlay","side":"long","symbol":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","atr":"{{plot_0}}","reason":"mean_cross_up"}')
+
+alertcondition(sigShort,
+     title   = "DPO — Short Signal",
+     message = '{"strategy":"DPO_Overlay","side":"short","symbol":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","atr":"{{plot_0}}","reason":"mean_cross_down"}')
+
+alertcondition(exitLong,
+     title   = "DPO — Exit Long",
+     message = '{"strategy":"DPO_Overlay","side":"exit_long","symbol":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+
+alertcondition(exitShort,
+     title   = "DPO — Exit Short",
+     message = '{"strategy":"DPO_Overlay","side":"exit_short","symbol":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')

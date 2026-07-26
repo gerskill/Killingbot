@@ -1,18 +1,52 @@
-WEBHOOK URL ACTIVE (Cloudflare Tunnel)
-========================================
-URL publique : https://that-illustration-spanking-resource.trycloudflare.com/webhook
-Health check  : https://that-illustration-spanking-resource.trycloudflare.com/health
-Signaux reçus : https://that-illustration-spanking-resource.trycloudflare.com/signals
+WEBHOOK URL ACTIVE (ngrok, domaine statique)
+============================================
 
-⚠ IMPORTANT : cette URL change à chaque redémarrage de cloudflared.
-Pour relancer le pipeline complet :
-  1. python3 webhook_server.py
-  2. cloudflared tunnel --url http://localhost:5001
-  3. Copier nouvelle URL → mettre à jour les 4 alertes TradingView
+Le tunnel Cloudflare décrit ici auparavant était mort (HTTP 000, vérifié le
+2026-07-25). Seul ngrok tourne, sous PM2, sur un domaine statique qui survit
+aux redémarrages.
 
-MESSAGES D'ALERTE TRADINGVIEW :
---------------------------------
-A★ LONG  : {"setup":"A*","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}
-A★ SHORT : {"setup":"A*","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}
-B LONG   : {"setup":"B","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}
-B SHORT  : {"setup":"B","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}
+  Base       : https://directed-ladder-chatter.ngrok-free.dev
+  Health     : /health                    (libre, pour le monitoring)
+  Webhook    : /webhook/<WEBHOOK_TOKEN>   ← à coller dans l'alerte TradingView
+  Signaux    : /signals/<WEBHOOK_TOKEN>
+  Push Pine  : /push-pine/<WEBHOOK_TOKEN>
+
+Le jeton est dans .env (jamais versionné). Pour obtenir l'URL complète :
+
+  grep ^WEBHOOK_TOKEN= .env | cut -d= -f2 | \
+    xargs -I{} echo "https://directed-ladder-chatter.ngrok-free.dev/webhook/{}"
+
+POURQUOI UN JETON DANS L'URL
+-----------------------------
+TradingView n'autorise aucun en-tête personnalisé sur une alerte : ni signature
+HMAC, ni Authorization. Le secret doit donc voyager dans le chemin.
+
+Une liste blanche d'IP ne fonctionnerait pas non plus : le tunnel se connecte à
+localhost, Flask voit donc 127.0.0.1 pour chaque requête, et l'IP réelle n'est
+lisible que dans X-Forwarded-For — en-tête que n'importe qui peut forger.
+
+Le serveur écoute sur 127.0.0.1 uniquement (plus sur 0.0.0.0) : le tunnel tourne
+sur cette machine, rien de légitime n'a besoin d'un accès depuis le réseau local.
+
+Un jeton invalide reçoit 404, pas 403 : une route protégée et une route
+inexistante doivent être indiscernables pour qui sonde le tunnel.
+
+ROTATION DU JETON
+-----------------
+  1. openssl rand -hex 24
+  2. remplacer WEBHOOK_TOKEN dans .env
+  3. pm2 restart killingbot-webhook
+  4. mettre à jour l'URL dans les alertes TradingView
+
+MESSAGES D'ALERTE TRADINGVIEW
+-----------------------------
+Stratégie active (PP_ST_BTC_4H_FINAL, alerte 5179451476) :
+
+  {"setup":"B","dir":"{{strategy.market_position}}","ticker":"BTCUSDT","tf":"{{interval}}","price":"{{close}}","exchange":"BINANCE"}
+
+`dir` accepte : long/buy = entrée · sell/flat/close = clôture synchronisée.
+
+Formats historiques (setup A* — déclenche l'ancien signal_agent, à éviter) :
+
+  A★ LONG  : {"setup":"A*","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}
+  A★ SHORT : {"setup":"A*","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}

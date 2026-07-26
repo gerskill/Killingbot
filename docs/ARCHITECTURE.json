@@ -1,0 +1,151 @@
+{
+  "project": "Killingbot",
+  "generated": "2026-07-26",
+  "purpose": "Carte d'architecture pour agent IA. Lire avant toute nouvelle feature.",
+  "root": "/Users/leclercq/Documents/Claude/Projects/Killingbot",
+
+  "regles_projet": [
+    "Aucun chiffre de performance n'est fiable sans test live dans le Strategy Tester TradingView. Un commentaire dans un .pine peut mentir.",
+    "Ne jamais executer d'ordre reel automatiquement. Paper trading uniquement jusqu'a validation walk-forward.",
+    "Un seul script attache au chart TradingView a la fois : empiler 3+ strategies avec request.security declenche 'Internal server study error'.",
+    "Tout resultat de backtest est in-sample tant que walk-forward non fait."
+  ],
+
+  "layers": [
+    {
+      "id": "signal",
+      "name": "Generation de signal",
+      "runtime": "TradingView (Pine Script v6)",
+      "files": ["pine_scripts/strategies/*.pine", "pine_scripts/indicators/*.pine"],
+      "sortie": "alert_message JSON -> webhook HTTP",
+      "format_alerte": "{\"setup\":\"A*\",\"dir\":\"LONG\",\"ticker\":\"{{ticker}}\",\"tf\":\"{{interval}}\",\"price\":\"{{close}}\",\"exchange\":\"{{exchange}}\"}"
+    },
+    {
+      "id": "ingest",
+      "name": "Reception webhook",
+      "runtime": "Python / FastAPI",
+      "entrypoint": "webhook_server_v2.py",
+      "legacy": "webhook_server.py (Flask, v1)",
+      "port": 5001,
+      "tunnel": "ngrok",
+      "routes": ["/webhook", "/health", "/signals", "/sovereign/generate"],
+      "queue": "core/queue.py (signal_queue async)"
+    },
+    {
+      "id": "filter",
+      "name": "Filtres et risque (sidecars)",
+      "files": {
+        "sidecars/signal_filter.py": "filtre regime de marche",
+        "sidecars/risk_manager.py": "sizing + garde-fous",
+        "sidecars/journal.py": "journal de trade",
+        "core/market_regime.py": "detection trend/range",
+        "core/macro_calendar.py": "kill switch evenements macro"
+      }
+    },
+    {
+      "id": "exec",
+      "name": "Execution",
+      "files": {
+        "core/paper_executor.py": "paper trading, lock fichier sur positions",
+        "core/strategy_engine.py": "moteur backtest Python (couts inclus)",
+        "core/registry.py": "registre strategies",
+        "core/strategy_bot.py": "wrapper bot"
+      },
+      "etat_persistant": ["vault/paper_positions.json", "trades.csv", "signals_log.jsonl"]
+    },
+    {
+      "id": "research",
+      "name": "Boucle de recherche (agents)",
+      "files": {
+        "agents/orchestrator.py": "boucle rounds : explore -> score -> suggere",
+        "agents/strategy_explorer.py": "genere + backteste variantes (yfinance, 6 paires)",
+        "agents/memory_agent.py": "memoire + classement + suggestions heuristiques",
+        "agents/llm_generator.py": "generation de variantes via Claude (needs ANTHROPIC_API_KEY)",
+        "agents/validation.py": "GARDE-FOUS : walk-forward, deflated Sharpe, Monte Carlo",
+        "agents/garch_position_sizer.py": "sizing GARCH(1,1) - NON BRANCHE",
+        "agents/stoic_multi_agent_system.py": "systeme 7 agents - NON BRANCHE (besoin cles broker)"
+      },
+      "sorties": ["vault/BEST_STRATEGIES.md", "vault/memory.json", "vault/AGENT_LOG.md"]
+    },
+    {
+      "id": "ui",
+      "name": "Dashboard",
+      "runtime": "Next.js + Vercel",
+      "files": ["app/views/DashboardView.tsx", "app/views/BacktestsView.tsx", "app/views/StrategiesView.tsx", "app/views/ChatView.tsx"],
+      "data": "public/trades.json (sync via scripts/sync_dashboard.py)"
+    },
+    {
+      "id": "codegen",
+      "name": "Generation de Pine",
+      "files": ["sovereign/engine.py", "sovereign/context.py", "sovereign/templates/"],
+      "role": "Jinja2 : params gagnants -> script Pine"
+    }
+  ],
+
+  "strategies": [
+    {
+      "fichier": "pp_st_btc_4h_final.pine",
+      "statut": "CONFIRMEE_LIVE",
+      "logique": "Pivot Point SuperTrend + EMA200 + ADX>=20, long only",
+      "resultats": {"marche": "BINANCE:BTCUSDT 4H", "periode": "2020-2026", "pnl_pct": 2947.56, "dd_pct": 24.53, "pf": 2.52, "wr_pct": 33.9, "trades": 59},
+      "note": "Seule strategie verifiee en direct dans le Strategy Tester. Base de reference."
+    },
+    {
+      "fichier": "pine_scripts/strategies/pp_st_btc_4h_v2_ls.pine",
+      "statut": "CODEE_PARTIELLEMENT_TESTEE",
+      "logique": "V1 + shorts miroir + hard SL optionnel + cooldown",
+      "note": "SL dur nuit aux longs, aide les shorts (DD 33->23%). Defaut : SL shorts seulement."
+    },
+    {
+      "fichier": "pine_scripts/strategies/stoic_123_ribbon.pine",
+      "statut": "TESTEE_MULTI_MARCHES",
+      "logique": "Systeme reel @StoicTA : ruban SMA10/20 + SMA50/200, sequence 1-2-3, map TF auto",
+      "sweet_spot": "8h",
+      "resultats_8h": {"BTCUSDT": 18.1, "ETHUSDT": 9.8, "SPX": 21.1, "EURUSD": -9.4, "NVDA": -42.9},
+      "regles": ["Crypto+indices 8h : marche", "Forex : casse (mean-revert)", "Actions : jamais intraday, Daily seulement"]
+    },
+    {
+      "fichier": "pine_scripts/strategies/stoic_lens_pure_v2.pine",
+      "statut": "TESTEE_MULTI_MARCHES",
+      "logique": "Protocole Stoic : HCOM/LCOM + PDH/PDL/PDC + SMA20/200 + Fib, score 4 piliers",
+      "sweet_spot": "15m et Daily (l'entre-deux perd)",
+      "resultats": "17/20 symboles positifs en Daily, aucun DD > 8.8%",
+      "note": "Meilleure generalisation multi-marches. Tuning SPX-optimise casse BTC -> garder les defauts."
+    },
+    {
+      "fichier": "pine_scripts/strategies/stoic_sbs.pine",
+      "statut": "TESTEE_REJETEE",
+      "logique": "Sequence SBS @StoicTA : breakout -> first tap -> liquidation -> double bottom -> Fib 61.8",
+      "meilleur_resultat": "+2.3% (1h tune)",
+      "verdict": "Sous-performe. Methode discretionnaire -> perd son edge une fois mecanisee. Garder comme indicateur visuel."
+    },
+    {
+      "fichier": "pine_scripts/strategies/kb_confluence_v1.pine",
+      "statut": "SUSPECT_OVERFIT",
+      "resultats": "BTC 12h +65% mais ETH -3.4%",
+      "verdict": "Echec cross-asset. Ne pas deployer."
+    },
+    {
+      "fichier": "kb_15m_strategy.pine",
+      "statut": "SUPPRIMEE",
+      "raison": "Annoncait +7.9%/mois, teste live = -8.76% PF 0.465"
+    }
+  ],
+
+  "chantiers_ouverts": [
+    {"id": "G1", "titre": "Walk-forward sur les strategies retenues", "prio": "haute", "detail": "Tous les resultats sont in-sample. agents/validation.py existe mais n'a jamais tourne sur les strategies Pine."},
+    {"id": "G2", "titre": "Grille complete ruban 40 symboles x 8 TF", "prio": "moyenne", "detail": "Commencee : crypto 8h fait (8/10 positifs). Reste actions/indices/forex sur tous TF."},
+    {"id": "G3", "titre": "Brancher garch_position_sizer.py", "prio": "moyenne", "detail": "Code + teste sur synthetique. Jamais appele depuis webhook_server."},
+    {"id": "G4", "titre": "ANTHROPIC_API_KEY commentee dans .env", "prio": "basse", "detail": "Bloque agents/llm_generator.py. Boucle tourne quand meme (heuristiques seules)."},
+    {"id": "G5", "titre": "130 fichiers non commites", "prio": "haute", "detail": "Risque de perte. Faire le point et committer."},
+    {"id": "G6", "titre": "Opening Range NY non implemente", "prio": "moyenne", "detail": "Vu sur le chart live @StoicTA. Pourrait sauver les bas TF (5m/15m negatifs)."},
+    {"id": "G7", "titre": "Process fantome port 5001", "prio": "basse", "detail": "PID 57999 jamais confirme arrete."}
+  ],
+
+  "pieges_connus": [
+    "MCP tradingview : pine_set_source ecrit dans un buffer cache qui ne s'attache pas au chart. L'attache doit etre faite a la main (Cmd+Enter) ou via compile qui marche par intermittence.",
+    "batch_run du MCP tradingview timeout au-dela de ~5 symboles. Utiliser la boucle manuelle.",
+    "Coller du code dans l'editeur Pine avec le focus sur le champ titre remplace le NOM du script, pas le contenu.",
+    "Les bougies 8h sur actions coupent les sessions -> gaps overnight au milieu des barres -> systemes momentum achetent des gaps qui se referment."
+  ]
+}

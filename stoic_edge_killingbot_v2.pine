@@ -1,0 +1,294 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════
+// STOIC EDGE × KILLINGBOT v2.0 — Optimisé post-backtest
+// ───────────────────────────────────────────────────────────────────────
+// CHANGEMENTS v1.0 → v2.0 (basés sur backtest 6 marchés 2026-06-06) :
+//   ✅ Long Only par défaut (shorts désactivables)
+//   ✅ ADX min 20→25 (filtrer davantage les ranges)
+//   ✅ ATR% min 0.2%→0.5% (crypto) / 0.3% (forex/actions)
+//   ✅ Cooldown 3→5 bars (réduire densité trades)
+//   ✅ SFP désactivé par défaut (trop de faux signaux forex)
+//   ✅ B&R désactivé par défaut (dilue le signal PP-ST)
+//   ✅ TP2 4R sur crypto (laisser courir les trends forts)
+//   ✅ Swing Length 5→8 (niveaux plus significatifs)
+//
+// Résultats v1.0 (avant optimisation) :
+//   BTC 4H   +8,38%  PF 1.12  686 trades  ← TROP DE TRADES
+//   ETH Daily+7,63%  PF 1.155 150 trades
+//   EURUSD   -6,63%  PF 0.51  591 trades  ← FOREX KO
+//   XAUUSD   -9,54%  PF 0.63  755 trades  ← GOLD KO
+//
+// Cible v2.0 : réduire à ~50-80 trades sur crypto, éliminer forex
+//
+// Leçon : PP-ST pur (59 trades) = +2947% vs SE×KB v1.0 (686 trades) = +8%
+//         La SÉLECTIVITÉ est l'edge, pas la quantité de setups.
+// ═══════════════════════════════════════════════════════════════════════
+strategy("Stoic Edge × Killingbot v2", overlay=true, shorttitle="SE×KB v2",
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=10,
+     commission_type=strategy.commission.percent,
+     commission_value=0.1,
+     slippage=2,
+     calc_on_every_tick=true)
+
+// ════════════════════════════════════════════════════════
+// ██ INPUTS — GROUPÉS PAR COUCHE
+// ════════════════════════════════════════════════════════
+
+// ── PP SuperTrend (valeurs éprouvées BTC 4H +2947%)
+int   i_prd    = input.int(2,    "Pivot Period",        minval=1, maxval=50,  group="▶ PP SuperTrend")
+float i_factor = input.float(5.0,"ATR Factor",          minval=1, step=0.1,  group="▶ PP SuperTrend")
+int   i_atrPd  = input.int(14,   "ATR Period",          minval=1,             group="▶ PP SuperTrend")
+
+// ── EMAs
+int i_emaFst   = input.int(7,    "EMA Fast",            minval=1, maxval=50,  group="▶ EMAs")
+int i_emaSlo   = input.int(21,   "EMA Slow",            minval=2, maxval=100, group="▶ EMAs")
+int i_emaMcr   = input.int(200,  "EMA Macro",           minval=50,maxval=500, group="▶ EMAs")
+
+// ── Filtres (resserrés en v2)
+int   i_adxMin = input.int(25,   "ADX Min",             minval=5, maxval=60,  group="▶ Filtres v2")
+float i_atrMin = input.float(0.5,"ATR% Min",            minval=0, step=0.1,   group="▶ Filtres v2")
+int   i_cool   = input.int(5,    "Cooldown (bars)",     minval=1, maxval=30,  group="▶ Filtres v2")
+bool  i_longOnly = input.bool(true, "Long Only (recommandé crypto)", group="▶ Filtres v2")
+
+// ── Setups Stoic Edge (SFP+B&R OFF par défaut en v2)
+bool i_ppst    = input.bool(true,  "PP-ST Flip ✓ (moteur principal)", group="▶ Setups")
+bool i_sfp     = input.bool(false, "SFP (Swing Failure Pattern)",      group="▶ Setups")
+bool i_bnr     = input.bool(false, "Break & Retest",                   group="▶ Setups")
+int  i_swing   = input.int(8,     "Swing Length",        minval=3, maxval=30, group="▶ Setups")
+
+// ── Risk Management
+float i_slMult = input.float(1.5, "SL × ATR",           minval=0.5, step=0.1, group="▶ Risk Mgmt")
+float i_tp1Rr  = input.float(2.0, "TP1 RR",             minval=1.0, step=0.5, group="▶ Risk Mgmt")
+float i_tp2Rr  = input.float(4.0, "TP2 RR (runner)",    minval=2.0, step=0.5, group="▶ Risk Mgmt")
+int   i_tp1Pct = input.int(50,    "% Close at T1",      minval=10,  maxval=90, group="▶ Risk Mgmt")
+bool  i_trail  = input.bool(true,  "Trail sur PP-ST",                          group="▶ Risk Mgmt")
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 1 — MARKET OUTLOOK (HTF BIAS)
+// ════════════════════════════════════════════════════════
+
+float ema7   = ta.ema(close, i_emaFst)
+float ema21  = ta.ema(close, i_emaSlo)
+float ema200 = ta.ema(close, i_emaMcr)
+float atr    = ta.atr(i_atrPd)
+
+// ── PP SuperTrend
+float ph = ta.pivothigh(i_prd, i_prd)
+float pl = ta.pivotlow(i_prd, i_prd)
+
+var float ppCenter = na
+float lpivot = not na(ph) ? ph : not na(pl) ? pl : na
+if not na(lpivot)
+    ppCenter := na(ppCenter) ? lpivot : (ppCenter * 2 + lpivot) / 3
+
+float ppUpBand = ppCenter - i_factor * atr
+float ppDnBand = ppCenter + i_factor * atr
+
+var float TUp     = na
+var float TDown   = na
+var int   ppTrend = 1
+TUp    := nz(close[1]) > nz(TUp[1])   ? math.max(ppUpBand, nz(TUp[1]))   : ppUpBand
+TDown  := nz(close[1]) < nz(TDown[1]) ? math.min(ppDnBand, nz(TDown[1])) : ppDnBand
+ppTrend := close > nz(TDown[1]) ? 1 : close < nz(TUp[1]) ? -1 : nz(ppTrend[1], 1)
+
+float ppLine = ppTrend == 1 ? TUp : TDown
+bool  ppBull = ppTrend == 1
+bool  ppBear = ppTrend == -1
+bool  ppBuy  = ppTrend == 1  and nz(ppTrend[1]) == -1
+bool  ppSell = ppTrend == -1 and nz(ppTrend[1]) == 1
+
+// ── Bias HTF
+bool emaBull   = ema7 > ema21
+bool macroBull = close > ema200
+bool macroBear = close < ema200
+
+bool htfLong  = ppBull and emaBull   and macroBull
+bool htfShort = ppBear and not emaBull and macroBear and not i_longOnly
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 2 — CONFLUENCES
+// ════════════════════════════════════════════════════════
+
+[_, _, adxVal] = ta.dmi(14, 14)
+bool  adxOk  = adxVal >= i_adxMin
+float atrPct = atr / close * 100
+bool  atrOk  = atrPct >= i_atrMin
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 3 — STRUCTURE & LIQUIDITÉ
+// ════════════════════════════════════════════════════════
+
+float swH = ta.pivothigh(i_swing, i_swing)
+float swL = ta.pivotlow(i_swing, i_swing)
+
+var float lastSwH = na
+var float lastSwL = na
+if not na(swH)
+    lastSwH := swH
+if not na(swL)
+    lastSwL := swL
+
+float pdh = timeframe.isdaily ? high[1] : request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+float pdl = timeframe.isdaily ? low[1]  : request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 4 — FILTRE RANGE & ROBUSTESSE
+// ════════════════════════════════════════════════════════
+
+var int lastSigBar = -99
+bool coolOk = (bar_index - lastSigBar) >= i_cool
+bool filtOk = adxOk and atrOk and coolOk
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 5 — QUALITÉ DU SETUP
+// ════════════════════════════════════════════════════════
+
+// ── PP-ST Flip (moteur primaire — le seul prouvé BTC 4H +2947%)
+bool ppBuySetup  = i_ppst and ppBuy
+bool ppSellSetup = i_ppst and ppSell
+
+// ── SFP (optionnel — OFF par défaut en v2)
+bool sfpBullSW  = i_sfp and not na(lastSwL) and low < lastSwL and close > lastSwL and close > open
+bool sfpBullPDL = i_sfp and not na(pdl) and low < pdl and close > pdl and close > open
+bool sfpLong    = sfpBullSW or sfpBullPDL
+bool sfpBearSW  = i_sfp and not na(lastSwH) and high > lastSwH and close < lastSwH and close < open
+bool sfpBearPDH = i_sfp and not na(pdh) and high > pdh and close < pdh and close < open
+bool sfpShort   = sfpBearSW or sfpBearPDH
+
+// ── Break & Retest (optionnel — OFF par défaut en v2)
+var float bnrLvl = na
+var int   bnrDir = 0
+if not na(lastSwH) and close[1] > lastSwH and close[2] <= lastSwH
+    bnrLvl := lastSwH
+    bnrDir := 1
+if not na(lastSwL) and close[1] < lastSwL and close[2] >= lastSwL
+    bnrLvl := lastSwL
+    bnrDir := -1
+float bnrBuf   = atr * 0.2
+bool  bnrLong  = i_bnr and bnrDir == 1  and not na(bnrLvl) and low  <= bnrLvl + bnrBuf and close > bnrLvl and close > open
+bool  bnrShort = i_bnr and bnrDir == -1 and not na(bnrLvl) and high >= bnrLvl - bnrBuf and close < bnrLvl and close < open
+if bnrLong or bnrShort
+    bnrDir := 0
+
+// ── Combinaison
+bool longSetup  = ppBuySetup  or sfpLong  or bnrLong
+bool shortSetup = ppSellSetup or sfpShort or bnrShort
+
+bool goLong  = htfLong  and filtOk and longSetup  and strategy.position_size == 0
+bool goShort = htfShort and filtOk and shortSetup and strategy.position_size == 0
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 6 — RISK MANAGEMENT
+// ════════════════════════════════════════════════════════
+
+float slDist = atr * i_slMult
+var float cSL    = na
+var float cTP1   = na
+var float cTP2   = na
+var string lastSetup = "—"
+
+if goLong
+    float sl  = close - slDist
+    float tp1 = close + slDist * i_tp1Rr
+    float tp2 = close + slDist * i_tp2Rr
+    cSL      := sl
+    cTP1     := tp1
+    cTP2     := tp2
+    lastSetup := ppBuySetup ? "PP-ST ▲" : sfpLong ? "SFP ▲" : "B&R ▲"
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long-T1", "Long", qty_percent=i_tp1Pct, limit=tp1, stop=sl, comment="T1-2R")
+    strategy.exit("Long-T2", "Long", limit=tp2, stop=sl, comment="T2-4R")
+    lastSigBar := bar_index
+    alert('{"action":"LONG","v":"2","setup":"' + (ppBuySetup ? "PPST" : sfpLong ? "SFP" : "BNR") + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","entry":' + str.tostring(close, "#.####") + ',"sl":' + str.tostring(sl, "#.####") + ',"tp1":' + str.tostring(tp1, "#.####") + ',"tp2":' + str.tostring(tp2, "#.####") + '}', alert.freq_once_per_bar_close)
+
+if goShort
+    float sl  = close + slDist
+    float tp1 = close - slDist * i_tp1Rr
+    float tp2 = close - slDist * i_tp2Rr
+    cSL      := sl
+    cTP1     := tp1
+    cTP2     := tp2
+    lastSetup := ppSellSetup ? "PP-ST ▼" : sfpShort ? "SFP ▼" : "B&R ▼"
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short-T1", "Short", qty_percent=i_tp1Pct, limit=tp1, stop=sl, comment="T1-2R")
+    strategy.exit("Short-T2", "Short", limit=tp2, stop=sl, comment="T2-4R")
+    lastSigBar := bar_index
+    alert('{"action":"SHORT","v":"2","setup":"' + (ppSellSetup ? "PPST" : sfpShort ? "SFP" : "BNR") + '","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","entry":' + str.tostring(close, "#.####") + ',"sl":' + str.tostring(sl, "#.####") + ',"tp1":' + str.tostring(tp1, "#.####") + ',"tp2":' + str.tostring(tp2, "#.####") + '}', alert.freq_once_per_bar_close)
+
+// ── Trail Exit
+if i_trail
+    if strategy.position_size > 0 and (ppSell or not htfLong)
+        strategy.close("Long",  comment="Trail PP-ST")
+    if strategy.position_size < 0 and (ppBuy  or not htfShort)
+        strategy.close("Short", comment="Trail PP-ST")
+
+// ════════════════════════════════════════════════════════
+// ██ COUCHE 7 — VISUALISATION & DASHBOARD
+// ════════════════════════════════════════════════════════
+
+color ppCol = ppBull ? color.lime : color.red
+plot(ppLine, "PP-ST",  color=ppCol,                          linewidth=2)
+plot(ema7,   "EMA7",   color=color.new(color.aqua,   0),     linewidth=1)
+plot(ema21,  "EMA21",  color=color.new(color.yellow, 0),     linewidth=1)
+plot(ema200, "EMA200", color=color.new(color.orange, 20),    linewidth=2)
+plot(pdh, "PDH", color=color.new(color.red,   60), linewidth=1, style=plot.style_stepline)
+plot(pdl, "PDL", color=color.new(color.green, 60), linewidth=1, style=plot.style_stepline)
+
+plotshape(goLong  ? low  : na, "LONG",  shape.labelup,   location.belowbar, color.new(color.lime, 0), textcolor=color.black, text="▲", size=size.small)
+plotshape(goShort ? high : na, "SHORT", shape.labeldown, location.abovebar, color.new(color.red,  0), textcolor=color.white, text="▼", size=size.small)
+
+bgcolor(not adxOk ? color.new(color.gray, 93) : na, title="No Edge Zone")
+
+// ── Dashboard v2
+var table dash = table.new(position.top_right, 2, 12,
+     bgcolor=color.new(color.black, 72),
+     border_color=color.new(color.gray, 50),
+     border_width=1,
+     frame_color=color.new(color.blue, 20),
+     frame_width=1)
+
+if barstate.islast
+    string tfDisp  = timeframe.period == "1"   ? "1m"  : timeframe.period == "5"   ? "5m"  : timeframe.period == "15"  ? "15m" : timeframe.period == "30"  ? "30m" : timeframe.period == "60"  ? "1H"  : timeframe.period == "240" ? "4H"  : timeframe.period == "D"   ? "1D"  : timeframe.period == "W"   ? "1W"  : timeframe.period + "m"
+    string biasStr = htfLong  ? "▲ LONG"   : htfShort ? "▼ SHORT"  : "◈ NEUTRE"
+    color  biasCol = htfLong  ? color.lime : htfShort ? color.red  : color.gray
+    string modeStr = i_longOnly ? "LONG ONLY" : "L+S"
+    color  modeCol = i_longOnly ? color.lime  : color.yellow
+    string ppStr   = ppBull   ? "▲ UP"     : "▼ DOWN"
+    color  ppCol2  = ppBull   ? color.lime : color.red
+    string emaStr  = emaBull  ? "BULL ▲"   : "BEAR ▼"
+    color  emaCol  = emaBull  ? color.lime : color.red
+    string adxStr  = str.tostring(math.round(adxVal)) + (adxOk ? " ✓" : " ✗ RANGE")
+    color  adxCol  = adxOk   ? color.lime : color.orange
+    string posStr  = strategy.position_size > 0 ? "● LONG"  : strategy.position_size < 0 ? "● SHORT" : "○ FLAT"
+    color  posCol  = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
+    float  pnlPct  = strategy.netprofit / strategy.initial_capital * 100
+    color  pnlCol  = strategy.netprofit >= 0 ? color.lime : color.red
+    string wrStr   = strategy.closedtrades > 0 ? str.tostring(math.round(strategy.wintrades / strategy.closedtrades * 100)) + "%" : "—"
+    float  pf      = strategy.grossprofit > 0 and strategy.grossloss > 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : 0.0
+
+    table.cell(dash, 0, 0,  "STOIC×KB v2", text_color=color.white,  text_size=size.small, bgcolor=color.new(color.navy, 20))
+    table.cell(dash, 1, 0,  syminfo.ticker + " " + tfDisp, text_color=color.yellow, text_size=size.small, bgcolor=color.new(color.navy, 20))
+    table.cell(dash, 0, 1,  "Mode",      text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 1,  modeStr,     text_color=modeCol,      text_size=size.small)
+    table.cell(dash, 0, 2,  "HTF Bias",  text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 2,  biasStr,     text_color=biasCol,      text_size=size.small)
+    table.cell(dash, 0, 3,  "PP-ST",     text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 3,  ppStr,       text_color=ppCol2,       text_size=size.small)
+    table.cell(dash, 0, 4,  "EMA 7/21",  text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 4,  emaStr,      text_color=emaCol,       text_size=size.small)
+    table.cell(dash, 0, 5,  "ADX",       text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 5,  adxStr,      text_color=adxCol,       text_size=size.small)
+    table.cell(dash, 0, 6,  "ATR%",      text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 6,  str.tostring(atrPct, "#.##") + "%" + (atrOk ? " ✓" : " ✗"), text_color=atrOk ? color.lime : color.orange, text_size=size.small)
+    table.cell(dash, 0, 7,  "Setup",     text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 7,  lastSetup,   text_color=color.aqua,   text_size=size.small)
+    table.cell(dash, 0, 8,  "Position",  text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 8,  posStr,      text_color=posCol,       text_size=size.small)
+    table.cell(dash, 0, 9,  "Trades",    text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 9,  str.tostring(strategy.closedtrades) + "  WR " + wrStr, text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 10, "Net P&L",   text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 10, str.tostring(pnlPct, "#.##") + "%", text_color=pnlCol, text_size=size.small)
+    table.cell(dash, 0, 11, "Profit F.", text_color=color.silver, text_size=size.small)
+    table.cell(dash, 1, 11, str.tostring(pf, "#.##"), text_color=pf >= 1.5 ? color.lime : pf >= 1.0 ? color.yellow : color.red, text_size=size.small)

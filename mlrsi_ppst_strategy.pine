@@ -1,0 +1,606 @@
+// © Killingbot — Claude Trading Architect
+// Combines: ML RSI AI (Zeiierman) + Pivot Point SuperTrend (LonesomeTheBlue)
+// Strategy: ML RSI fires the trigger, PP-ST confirms the direction
+
+//@version=6
+strategy(
+     title             = "ML RSI × PP SuperTrend Strategy [Killingbot]",
+     shorttitle         = "MLRSI×PPST",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.05,
+     slippage           = 2,
+     pyramiding         = 0,
+     calc_on_every_tick = false)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS — PP SUPERTREND
+// ═══════════════════════════════════════════════════════════════════════════
+grpPP  = "── Pivot Point SuperTrend ──"
+prd    = input.int(2,    "Pivot Period",  minval=1, maxval=50, group=grpPP)
+Factor = input.float(3.0,"ATR Factor",   minval=1, step=0.1,  group=grpPP)
+Pd     = input.int(10,   "ATR Period",   minval=1,             group=grpPP)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS — ML RSI BRAIN
+// ═══════════════════════════════════════════════════════════════════════════
+grpML       = "── ML RSI Brain ──"
+priceSrc    = input.source(close, "Price Source",       group=grpML)
+rsiBase     = input.int(14,       "Base RSI Length",    minval=2, group=grpML)
+memoryDepth = input.int(500,      "Memory Depth (bars)",minval=80, maxval=2000, group=grpML)
+kNeighbors  = input.int(8,        "Analog Count (k)",  minval=1, maxval=64, group=grpML)
+atrFactor   = input.float(0.5,    "Learning Sensitivity (×ATR)", minval=0, step=0.1, group=grpML)
+
+grpSig      = "── ML RSI Signals ──"
+gateRank    = input.int(60,  "Min Rank",       minval=0, maxval=100, group=grpSig)
+gateConf    = input.int(50,  "Min Confidence", minval=0, maxval=100, group=grpSig)
+useTrendGate= input.bool(true, "Trend Gate (ML ST)",   group=grpSig)
+useVolBand  = input.bool(true, "Volatility Band",      group=grpSig)
+volBandLo   = input.int(20,   "Min Vol Rank",  minval=0, maxval=100, group=grpSig)
+useChop     = input.bool(true, "Chop Filter",           group=grpSig)
+autoWeightsOn = input.bool(true, "Auto-Optimize Weights", group=grpSig)
+autoSpeed     = input.float(1.0, "Adaptation Speed", minval=0.005, maxval=1.0, step=0.005, group=grpSig, active=autoWeightsOn)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS — STRATEGY SIGNAL LOGIC
+// ═══════════════════════════════════════════════════════════════════════════
+grpEntry  = "── Entry Logic ──"
+i_mode    = input.string("Both Agree", "Entry Mode",
+     options=["Both Agree","ML RSI Only","PP-ST Flip Only"],
+     group=grpEntry,
+     tooltip="Both Agree = ML RSI trigger + PP-ST trend confirm.\nML RSI Only = ML RSI trigger ignores PP-ST.\nPP-ST Flip Only = PP-ST direction change ignores ML RSI.")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS — RISK MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+grpRM          = "── Risk Management ──"
+i_sl_mult      = input.float(1.5,  "SL ATR mult", minval=0.5, maxval=5.0,  step=0.1, group=grpRM)
+i_tp_mult      = input.float(3.0,  "TP ATR mult", minval=0.5, maxval=10.0, step=0.1, group=grpRM)
+i_atr_len      = input.int(14,     "ATR Length",  minval=5,   maxval=50,   group=grpRM)
+i_use_trailing = input.bool(true,  "Trailing Exit (exit on opposite signal)", group=grpRM)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS — DATES & VISUEL
+// ═══════════════════════════════════════════════════════════════════════════
+grpDate   = "── Période ──"
+i_start   = input.time(timestamp("2020-01-01"), "Début", group=grpDate)
+i_end     = input.time(timestamp("2099-12-31"), "Fin",   group=grpDate)
+in_range  = time >= i_start and time <= i_end
+
+grpVis    = "── Visuel ──"
+showDash  = input.bool(true,  "Dashboard",        group=grpVis)
+showPPST  = input.bool(true,  "PP SuperTrend",    group=grpVis)
+paintBars = input.bool(false, "Candle Coloring",  group=grpVis)
+
+// Colors
+sigBull   = input.color(color.lime,  "Long",     inline="sig", group=grpVis)
+sigBear   = input.color(color.red,   "Short",    inline="sig", group=grpVis)
+ppBull    = input.color(color.lime,  "PP-ST Up", inline="pp",  group=grpVis)
+ppBear    = input.color(color.red,   "PP-ST Dn", inline="pp",  group=grpVis)
+mlBull    = input.color(color.blue,  "ML Up",    inline="ml",  group=grpVis)
+mlBear    = input.color(color.white, "ML Dn",    inline="ml",  group=grpVis)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════
+winLen      = 100
+spacingBars = 4
+horizonBars = 4
+trendLen    = 50
+chopCut     = 0.5
+volBandHi   = 85
+autoFloor   = 0.5
+autoMinRows = 60
+smoothLen   = 10
+stAtrLen    = 10
+stMultBase  = 2.0
+stMlResp    = 1.0
+kNeighborsML = kNeighbors
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+type Features
+    float value
+    float slope
+    float accel
+    float mid
+    float pct
+    float churn
+    float spread
+    float regime
+
+type Weights
+    float value
+    float slope
+    float accel
+    float mid
+    float pct
+    float churn
+    float spread
+    float regime
+
+type Neighbor
+    float gap
+    int cls
+
+type Vote
+    float total = 0.0
+    float bull  = 0.0
+    float bear  = 0.0
+    float score = 0.0
+
+type Engine
+    float analogScore = 0.0
+    int   biasDir     = 0
+    float agreeFrac   = 0.0
+    float gapTight    = 0.0
+    int   k           = 0
+
+type Context
+    bool  upTrend
+    bool  downTrend
+    float atrPct
+    bool  volHealthy
+    bool  chopRaw
+    bool  chopNow
+    float oscReg
+    bool  slopeUp
+    bool  slopeFit
+    bool  stretched
+    bool  oscSmoothUp
+
+type Setup
+    float rank = 0.0
+    float conf = 0.0
+    int   dir  = 0
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+scale01(float _v, int _len) =>
+    lo = ta.lowest(_v, _len)
+    hi = ta.highest(_v, _len)
+    hi == lo ? 0.5 : (_v - lo) / (hi - lo)
+
+compress(float _d) =>
+    math.log(1.0 + math.abs(_d))
+
+autoFeatureWeights(matrix<float> m, int minRows, float floor) =>
+    int n = m.rows()
+    array<float> imp = array.new<float>(8, 1.0)
+    if n >= minRows
+        array<float> sumB  = array.new<float>(8, 0.0)
+        array<float> sumBe = array.new<float>(8, 0.0)
+        array<float> sqB   = array.new<float>(8, 0.0)
+        array<float> sqBe  = array.new<float>(8, 0.0)
+        int cntB  = 0
+        int cntBe = 0
+        for i = 0 to n - 1
+            float o = m.get(i, 8)
+            if o > 0 or o < 0
+                bool isB = o > 0
+                for j = 0 to 7
+                    float v = m.get(i, j)
+                    if isB
+                        sumB.set(j, sumB.get(j) + v)
+                        sqB.set(j, sqB.get(j) + v * v)
+                    else
+                        sumBe.set(j, sumBe.get(j) + v)
+                        sqBe.set(j, sqBe.get(j) + v * v)
+                cntB  := isB ? cntB + 1  : cntB
+                cntBe := isB ? cntBe     : cntBe + 1
+        if cntB > 2 and cntBe > 2
+            array<float> fish = array.new<float>(8, 0.0)
+            float maxF = 0.0
+            for j = 0 to 7
+                float mB  = sumB.get(j)  / cntB
+                float mBe = sumBe.get(j) / cntBe
+                float vB  = math.max(0.0, sqB.get(j)  / cntB  - mB  * mB)
+                float vBe = math.max(0.0, sqBe.get(j) / cntBe - mBe * mBe)
+                float f   = math.pow(mB - mBe, 2) / (vB + vBe + 1e-6)
+                fish.set(j, f)
+                maxF := math.max(maxF, f)
+            for j = 0 to 7
+                float norm = maxF > 0 ? fish.get(j) / maxF : 1.0
+                imp.set(j, math.max(floor, norm * 10.0))
+    imp
+
+method wSum(Weights w) =>
+    w.value + w.slope + w.accel + w.mid + w.pct + w.churn + w.spread + w.regime
+
+method gapTo(Features f, array<float> row, Weights w) =>
+    w.value  * compress(f.value  - row.get(0)) +
+    w.slope  * compress(f.slope  - row.get(1)) +
+    w.accel  * compress(f.accel  - row.get(2)) +
+    w.mid    * compress(f.mid    - row.get(3)) +
+    w.pct    * compress(f.pct    - row.get(4)) +
+    w.churn  * compress(f.churn  - row.get(5)) +
+    w.spread * compress(f.spread - row.get(6)) +
+    w.regime * compress(f.regime - row.get(7))
+
+method consider(array<Neighbor> nbrs, int kMax, Neighbor cand) =>
+    if nbrs.size() < kMax
+        nbrs.push(cand)
+    else
+        int worst = 0
+        float worstGap = nbrs.get(0).gap
+        for i = 1 to nbrs.size() - 1
+            float g = nbrs.get(i).gap
+            if g > worstGap
+                worstGap := g
+                worst    := i
+        if cand.gap < worstGap
+            nbrs.set(worst, cand)
+
+method tally(Vote v, Neighbor n) =>
+    float w = 1.0 / (1.0 + n.gap)
+    v.total := v.total + w
+    v.score := v.score + n.cls * w
+    if n.cls > 0
+        v.bull := v.bull + w
+    else if n.cls < 0
+        v.bear := v.bear + w
+    v
+
+method aligned(Context c, int dir) =>
+    dir == 1 and c.upTrend or dir == -1 and c.downTrend
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ML RSI FEATURE ENGINE
+// ═══════════════════════════════════════════════════════════════════════════
+rOsc  = ta.rsi(priceSrc, rsiBase)
+rOscF = ta.rsi(priceSrc, math.max(2, math.round(rsiBase / 2)))
+rOscS = ta.rsi(priceSrc, rsiBase * 2)
+atrML = ta.atr(14)
+stepL = 3
+
+Features cur = Features.new(
+     rOsc / 100.0,
+     scale01(rOsc - rOsc[stepL], winLen),
+     scale01(rOsc - rOsc[stepL] - (rOsc[stepL] - rOsc[2 * stepL]), winLen),
+     math.abs(rOsc - 50.0) / 50.0,
+     ta.percentrank(rOsc, winLen) / 100.0,
+     scale01(ta.stdev(rOsc, 14), winLen),
+     scale01(rOscF - rOscS, winLen),
+     scale01(ta.ema(rOsc, 20) - 50.0, winLen))
+
+Weights wts = Weights.new(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FEATURE BANK
+// ═══════════════════════════════════════════════════════════════════════════
+var matrix<float> bank = matrix.new<float>(0, 9)
+
+moveFwd = priceSrc - priceSrc[horizonBars]
+bandFwd = atrFactor * atrML[horizonBars]
+outcome = moveFwd > 2 * bandFwd ? 3 : moveFwd > bandFwd ? 2 : moveFwd > 0 ? 1 :
+          moveFwd < -2 * bandFwd ? -3 : moveFwd < -bandFwd ? -2 : moveFwd < 0 ? -1 : 0
+
+Features curPast = cur[horizonBars]
+fVal = na(curPast) ? na : curPast.value
+fSlp = na(curPast) ? na : curPast.slope
+fAcc = na(curPast) ? na : curPast.accel
+fMid = na(curPast) ? na : curPast.mid
+fPct = na(curPast) ? na : curPast.pct
+fChn = na(curPast) ? na : curPast.churn
+fSpr = na(curPast) ? na : curPast.spread
+fReg = na(curPast) ? na : curPast.regime
+
+if barstate.isconfirmed and bar_index > horizonBars
+    row = array.from(fVal, fSlp, fAcc, fMid, fPct, fChn, fSpr, fReg, float(outcome))
+    bank.add_row(0, row)
+    if bank.rows() > memoryDepth
+        bank.remove_row(bank.rows() - 1)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTO WEIGHT OPTIMIZER
+// ═══════════════════════════════════════════════════════════════════════════
+var array<float> wAuto = array.new<float>(8, 1.0)
+if autoWeightsOn and barstate.isconfirmed
+    array<float> wRaw = autoFeatureWeights(bank, autoMinRows, autoFloor)
+    for j = 0 to 7
+        wAuto.set(j, wAuto.get(j) + autoSpeed * (wRaw.get(j) - wAuto.get(j)))
+
+if autoWeightsOn
+    wts.value  := wAuto.get(0)
+    wts.slope  := wAuto.get(1)
+    wts.accel  := wAuto.get(2)
+    wts.mid    := wAuto.get(3)
+    wts.pct    := wAuto.get(4)
+    wts.churn  := wAuto.get(5)
+    wts.spread := wAuto.get(6)
+    wts.regime := wAuto.get(7)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KNN ENGINE
+// ═══════════════════════════════════════════════════════════════════════════
+var array<Neighbor> nbrs = array.new<Neighbor>()
+nbrs.clear()
+
+bankN   = bank.rows()
+scanEnd = math.min(memoryDepth - 1, bankN - 1)
+if bankN > 1
+    for idx = 0 to scanEnd
+        if idx % spacingBars == 0
+            row = bank.row(idx)
+            g   = cur.gapTo(row, wts)
+            if not na(g)
+                nbrs.consider(kNeighborsML, Neighbor.new(g, int(row.get(8))))
+
+Vote vote = Vote.new()
+float gapSum = 0.0
+int kCount   = nbrs.size()
+if kCount > 0
+    for j = 0 to kCount - 1
+        Neighbor n = nbrs.get(j)
+        vote.tally(n)
+        gapSum += n.gap
+
+Engine eng = Engine.new()
+eng.k           := kCount
+eng.analogScore := vote.total > 0 ? vote.score / vote.total : 0.0
+eng.biasDir     := eng.analogScore > 0.15 ? 1 : eng.analogScore < -0.15 ? -1 : 0
+eng.agreeFrac   := vote.total > 0 ? (eng.biasDir == 1 ? vote.bull : eng.biasDir == -1 ? vote.bear : 0.0) / vote.total : 0.0
+avgGap       = kCount > 0 ? gapSum / kCount : 0.0
+gapScale     = wts.wSum() * 0.45 + 1e-9
+eng.gapTight := math.max(0.0, math.min(1.0, 1.0 - avgGap / gapScale))
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ML ADAPTIVE SUPERTREND
+// ═══════════════════════════════════════════════════════════════════════════
+var float mlStLong  = na
+var float mlStShort = na
+var int   mlStDir   = 1
+
+emaTrend   = ta.ema(priceSrc, trendLen)
+emaQuick   = ta.ema(priceSrc, 5)
+atrPctML   = ta.percentrank(ta.atr(14), 100)
+trendForce = ta.atr(14) > 0 ? math.abs(emaQuick - emaTrend) / ta.atr(14) : 0.0
+chopRaw_   = trendForce < chopCut
+chopNow_   = useChop ? chopRaw_ : false
+
+convInst     = math.max(-1.0, math.min(1.0, eng.analogScore / 1.5))
+convSmoothed = ta.ema(convInst, smoothLen)
+mlDrive      = math.max(0.0, math.min(1.0, math.abs(convSmoothed) * 0.5 + eng.gapTight * 0.3 + eng.agreeFrac * 0.2))
+mlDrive     := chopNow_ ? mlDrive * 0.35 : mlDrive
+
+adaptMult   = stMultBase * (1.0 + stMlResp * (1.0 - mlDrive))
+stAtr_      = ta.atr(stAtrLen)
+upBandML    = hl2 - adaptMult * stAtr_
+dnBandML    = hl2 + adaptMult * stAtr_
+
+mlStLong  := na(mlStLong[1])  ? upBandML : close[1] > mlStLong[1]  ? math.max(upBandML, mlStLong[1])  : upBandML
+mlStShort := na(mlStShort[1]) ? dnBandML : close[1] < mlStShort[1] ? math.min(dnBandML, mlStShort[1]) : dnBandML
+mlStDir   := na(mlStDir[1]) ? 1 : mlStDir[1] == -1 and close > mlStShort[1] ? 1 : mlStDir[1] == 1 and close < mlStLong[1] ? -1 : nz(mlStDir[1], 1)
+
+Context ctx = Context.new(
+     mlStDir == 1, mlStDir == -1, atrPctML,
+     atrPctML >= volBandLo and atrPctML <= volBandHi,
+     chopRaw_, chopNow_,
+     ta.ema(rOsc, 20),
+     rOsc > rOsc[stepL],
+     eng.biasDir == 1 and rOsc > rOsc[stepL] or eng.biasDir == -1 and not (rOsc > rOsc[stepL]),
+     eng.biasDir == 1 and rOsc > 70 or eng.biasDir == -1 and rOsc < 30,
+     ta.ema(rOsc, 5) > ta.ema(rOsc, 5)[1])
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ML RSI SIGNALS
+// ═══════════════════════════════════════════════════════════════════════════
+var int stanceState = 0
+var int stanceAge   = 0
+
+gatesPass   = (not useTrendGate or ctx.aligned(eng.biasDir)) and (not useVolBand or ctx.volHealthy) and not ctx.chopNow
+stanceState := eng.biasDir == 1 and gatesPass ? 1 : eng.biasDir == -1 and gatesPass ? -1 : nz(stanceState[1])
+stanceChanged = ta.change(stanceState) != 0
+stanceAge     := stanceChanged ? 0 : stanceAge + 1
+earlyFlip     = stanceChanged and (stanceChanged[1] or stanceChanged[2] or stanceChanged[3])
+
+rankScore_(Engine e, Context c, int age, bool flip) =>
+    pAgree  = 25.0 * e.agreeFrac
+    pGap    = 15.0 * e.gapTight
+    pStruct = (c.slopeFit ? 10.0 : 0.0) + (c.stretched ? 0.0 : 5.0)
+    pTrend  = c.aligned(e.biasDir) ? 10.0 : 0.0
+    pVol    = c.volHealthy ? 10.0 : c.atrPct < volBandLo ? 5.0 : 3.0
+    regFit  = e.biasDir == 1 and c.oscReg > 55 or e.biasDir == -1 and c.oscReg < 45
+    pReg    = regFit ? 10.0 : c.oscReg >= 45 and c.oscReg <= 55 ? 4.0 : 6.0
+    pSmooth = e.biasDir == 1 and c.oscSmoothUp or e.biasDir == -1 and not c.oscSmoothUp ? 5.0 : 0.0
+    pHold   = math.min(5.0, float(age))
+    pPen    = math.min(20.0, (c.chopRaw ? 8.0 : 0.0) + (c.stretched ? 6.0 : 0.0) + (flip ? 6.0 : 0.0) +
+              (e.k < kNeighbors ? 5.0 * float(kNeighbors - e.k) / kNeighbors : 0.0))
+    raw     = pAgree + pGap + pStruct + pTrend + pVol + pReg + pSmooth + pHold - pPen
+    e.biasDir == 0 ? 0.0 : math.max(0.0, math.min(100.0, raw))
+
+confScore_(Engine e, Context c, int age, bool flip) =>
+    raw = 40.0 * e.agreeFrac + 25.0 * e.gapTight + 15.0 * math.min(1.0, float(age) / 5.0) +
+          10.0 * (c.slopeFit ? 1.0 : 0.0) - (flip ? 15.0 : 0.0) -
+          (e.k < kNeighbors ? 10.0 * float(kNeighbors - e.k) / kNeighbors : 0.0)
+    e.biasDir == 0 ? 0.0 : math.max(0.0, math.min(100.0, raw))
+
+Setup setup = Setup.new()
+setup.dir  := eng.biasDir
+setup.rank := rankScore_(eng, ctx, stanceAge, earlyFlip)
+setup.conf := confScore_(eng, ctx, stanceAge, earlyFlip)
+
+var int lastEntryBar = na
+flipLong  = stanceState == 1  and stanceState[1] != 1
+flipShort = stanceState == -1 and stanceState[1] != -1
+qualifies = setup.rank >= gateRank and setup.conf >= gateConf
+coolOK    = na(lastEntryBar) or bar_index - lastEntryBar >= 5
+
+mlLong  = flipLong  and qualifies and coolOK and barstate.isconfirmed
+mlShort = flipShort and qualifies and coolOK and barstate.isconfirmed
+if mlLong or mlShort
+    lastEntryBar := bar_index
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PIVOT POINT SUPERTREND
+// ═══════════════════════════════════════════════════════════════════════════
+float ph = ta.pivothigh(prd, prd)
+float pl = ta.pivotlow(prd, prd)
+
+var float ppCenter = na
+float lastpp = bool(ph) ? ph : bool(pl) ? pl : na
+if bool(lastpp)
+    ppCenter := na(ppCenter) ? lastpp : (ppCenter * 2 + lastpp) / 3
+
+ppUp  = ppCenter - Factor * ta.atr(Pd)
+ppDn  = ppCenter + Factor * ta.atr(Pd)
+
+var float ppTUp   = na
+var float ppTDown = na
+var int   ppTrend = 0
+ppTUp   := close[1] > ppTUp[1]   ? math.max(ppUp,  ppTUp[1])  : ppUp
+ppTDown := close[1] < ppTDown[1] ? math.min(ppDn,  ppTDown[1]) : ppDn
+ppTrend := close > ppTDown[1] ? 1 : close < ppTUp[1] ? -1 : nz(ppTrend[1], 1)
+ppTrail = ppTrend == 1 ? ppTUp : ppTDown
+
+ppBsig = ppTrend == 1  and ppTrend[1] == -1  // PP-ST flip to bullish
+ppSsig = ppTrend == -1 and ppTrend[1] == 1   // PP-ST flip to bearish
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMBINED ENTRY / EXIT SIGNALS
+// ═══════════════════════════════════════════════════════════════════════════
+// Entry conditions per mode
+bool sigLong  = false
+bool sigShort = false
+
+if i_mode == "Both Agree"
+    // ML RSI fires the trigger + PP-ST confirms the trend direction
+    sigLong  := mlLong  and ppTrend == 1
+    sigShort := mlShort and ppTrend == -1
+else if i_mode == "ML RSI Only"
+    sigLong  := mlLong
+    sigShort := mlShort
+else // "PP-ST Flip Only"
+    sigLong  := ppBsig
+    sigShort := ppSsig
+
+sigLong  := sigLong  and in_range
+sigShort := sigShort and in_range
+
+// Exit: opposite PP-ST flip OR opposite ML RSI signal
+exitLong  = ppSsig or mlShort
+exitShort = ppBsig or mlLong
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RISK MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+atrRM       = ta.atr(i_atr_len)
+var float slL = na
+var float tpL = na
+var float slS = na
+var float tpS = na
+
+if sigLong and strategy.position_size == 0
+    slL := close - atrRM * i_sl_mult
+    tpL := close + atrRM * i_tp_mult
+
+if sigShort and strategy.position_size == 0
+    slS := close + atrRM * i_sl_mult
+    tpS := close - atrRM * i_tp_mult
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EXECUTION
+// ═══════════════════════════════════════════════════════════════════════════
+if sigLong
+    strategy.entry("Long", strategy.long, comment="ML×PP↑")
+    if not i_use_trailing
+        strategy.exit("SL/TP L", "Long", stop=slL, limit=tpL)
+    alert('{"strategy":"MLRSI_PPST","side":"long","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":"' + str.tostring(close) + '","rank":"' + str.tostring(math.round(setup.rank)) + '"}', alert.freq_once_per_bar)
+
+if sigShort
+    strategy.entry("Short", strategy.short, comment="ML×PP↓")
+    if not i_use_trailing
+        strategy.exit("SL/TP S", "Short", stop=slS, limit=tpS)
+    alert('{"strategy":"MLRSI_PPST","side":"short","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":"' + str.tostring(close) + '","rank":"' + str.tostring(math.round(setup.rank)) + '"}', alert.freq_once_per_bar)
+
+if i_use_trailing
+    if exitLong  and strategy.position_size > 0
+        strategy.close("Long",  comment="Exit↓")
+    if exitShort and strategy.position_size < 0
+        strategy.close("Short", comment="Exit↑")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VISUALISATION
+// ═══════════════════════════════════════════════════════════════════════════
+// PP SuperTrend line
+ppLineColor = ppTrend == 1 and ppTrend[1] == 1 ? ppBull : ppTrend == -1 and ppTrend[1] == -1 ? ppBear : na
+plot(showPPST ? ppTrail : na, "PP SuperTrend", color=ppLineColor, linewidth=2)
+
+// ML Supertrend (glow)
+mlStLine  = mlStDir == 1 ? mlStLong : mlStShort
+mlStColor = mlStDir == 1 ? mlBull   : mlBear
+plot(mlStLine, "ML Supertrend", color=color.new(mlStColor, 50), linewidth=4)
+plot(mlStLine, "ML Supertrend Core", color=mlStColor, linewidth=1)
+
+// PP-ST flip signals
+plotshape(showPPST and ppBsig ? ppTrail : na, "PP Buy",  shape.labelup,   location.absolute, ppBull, text="PP↑", textcolor=color.black, size=size.tiny)
+plotshape(showPPST and ppSsig ? ppTrail : na, "PP Sell", shape.labeldown, location.absolute, ppBear, text="PP↓", textcolor=color.white, size=size.tiny)
+
+// Strategy entry signals
+placeL = ta.lowest(low,   5)
+placeS = ta.highest(high, 5)
+plotshape(sigLong,  "Long",  shape.triangleup,   location.absolute, sigBull, offset=0, size=size.small)
+plotshape(sigShort, "Short", shape.triangledown, location.absolute, sigBear, offset=0, size=size.small)
+
+// Candle coloring
+toneCol = ppTrend == 1 ? color.new(ppBull, 70) : color.new(ppBear, 70)
+col_    = paintBars ? toneCol : na
+plotcandle(open, high, low, close, color=col_, wickcolor=col_, bordercolor=col_)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════
+if showDash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 12,
+         bgcolor=color.new(color.black, 15), border_width=1, border_color=color.new(color.gray, 60))
+
+    th = color.new(color.white,  0)
+    tv = color.new(color.silver, 0)
+    bh = color.new(color.navy,  15)
+    bv = color.new(color.black, 40)
+
+    ppCol   = ppTrend == 1  ? color.lime  : color.red
+    mlCol   = mlStDir == 1  ? color.teal  : color.red
+    posCol  = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
+    pnlCol  = strategy.netprofit >= 0 ? color.lime : color.red
+    rankCol = setup.rank >= 70 ? color.lime : setup.rank >= 50 ? color.orange : color.red
+    confCol = setup.conf >= 70 ? color.lime : setup.conf >= 50 ? color.orange : color.red
+
+    ppStr  = ppTrend == 1  ? "▲ BULL" : "▼ BEAR"
+    mlStr  = mlStDir == 1  ? "▲ BULL" : "▼ BEAR"
+    biasStr= eng.biasDir == 1 ? "▲ LONG" : eng.biasDir == -1 ? "▼ SHORT" : "— Neutre"
+    biasCol= eng.biasDir == 1 ? color.lime : eng.biasDir == -1 ? color.red : color.gray
+    posStr = strategy.position_size > 0 ? "● LONG" : strategy.position_size < 0 ? "● SHORT" : "○ Flat"
+    pnlStr = str.tostring(math.round(strategy.netprofit / strategy.initial_capital * 100, 2)) + "%"
+    wrVal  = strategy.wintrades + strategy.losstrades > 0 ? strategy.wintrades / (strategy.wintrades + strategy.losstrades) * 100 : 0.0
+    modeStr= i_mode == "Both Agree" ? "Both ✓" : i_mode == "ML RSI Only" ? "ML Only" : "PP Only"
+
+    table.cell(dash, 0, 0,  "ML RSI × PP-ST",   text_color=th, bgcolor=bh, text_size=size.small)
+    table.cell(dash, 1, 0,  "[Killingbot]",      text_color=th, bgcolor=bh, text_size=size.small)
+    table.cell(dash, 0, 1,  "Mode",              text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 1,  modeStr,             text_color=th, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 2,  "PP-ST",             text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 2,  ppStr,               text_color=ppCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 3,  "ML SuperTrend",     text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 3,  mlStr,               text_color=mlCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 4,  "ML Bias",           text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 4,  biasStr,             text_color=biasCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 5,  "Rank",              text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 5,  str.tostring(math.round(setup.rank, 1)), text_color=rankCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 6,  "Confidence",        text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 6,  str.tostring(math.round(setup.conf, 1)), text_color=confCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 7,  "ATR%",              text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 7,  str.tostring(math.round(atrPctML, 1)) + "%", text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 8,  "Position",          text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 8,  posStr,              text_color=posCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 9,  "Net P&L",           text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 9,  pnlStr,              text_color=pnlCol, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 10, "Win Rate",          text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 10, str.tostring(math.round(wrVal, 1)) + "%", text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 0, 11, "Trades",            text_color=tv, bgcolor=bv, text_size=size.small)
+    table.cell(dash, 1, 11, str.tostring(strategy.wintrades + strategy.losstrades), text_color=tv, bgcolor=bv, text_size=size.small)

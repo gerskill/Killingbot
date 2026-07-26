@@ -1,0 +1,291 @@
+//@version=6
+// =============================================================================
+//  KILLINGBOT HYBRID V3 MTF — Multi-Timeframe + Multi-Facteur Confluence
+//  Objectif : 10%/mois sur PnL clôturé, revenu passif régulier, low DD
+//
+//  ARCHITECTURE MULTI-TIMEFRAME :
+//    HTF (4H par défaut) : Bias macro PP-ST + EMA200 + ADX
+//    LTF (chart courant) : Trigger PP-ST + Sweep + Stoic
+//    → Entrée uniquement si LTF aligné avec HTF
+//    = + de signaux qu'en pur 4H, sans dégrader la qualité
+//
+//  FACTEURS COMBINÉS :
+//    1. HTF Trend (PP-ST 4H)         = direction permise
+//    2. HTF EMA200                   = bias macro (long/short)
+//    3. HTF ADX ≥ 20                 = marché trending
+//    4. LTF PP-ST trend reverse      = trigger d'entrée
+//    5. LTF Liquidity Sweep récent   = boost qualité
+//    6. Stoic Score 4 piliers (LTF)  = boost sizing
+//    7. DD throttle adaptatif        = protection capital
+//
+//  → Entrée valide = 4 sur 4 facteurs minimum (HTF bias + HTF trend + HTF ADX + LTF trigger)
+//  → Boost si Sweep ou Stoic ≥ 2
+// =============================================================================
+
+strategy(
+     title              = "Killingbot Hybrid V3 MTF",
+     shorttitle         = "KB-V3-MTF",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.1,
+     slippage           = 1,
+     pyramiding         = 0,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+// ── INPUTS
+gMTF = "0. Multi-Timeframe"
+htf_period = input.timeframe("240", "Timeframe HTF context", options=["60","120","240","360","480","720","D","2D","W"], group=gMTF)
+require_htf_bias  = input.bool(true, "Exiger bias HTF aligné", group=gMTF)
+require_htf_trend = input.bool(true, "Exiger trend HTF PP-ST aligné", group=gMTF)
+
+gPP = "1. PP SuperTrend (LTF)"
+prd    = input.int(2,    "Pivot Period", minval=1, maxval=50, group=gPP)
+Factor = input.float(5.0,"ATR Factor",   minval=1, step=0.1, group=gPP)
+Pd     = input.int(14,   "ATR Period",   minval=1,           group=gPP)
+
+gFLT = "2. Filtres macro (HTF)"
+ema_len     = input.int(200, "EMA Macro",      minval=10, group=gFLT)
+adx_len     = input.int(14,  "ADX Length",     minval=1,  group=gFLT)
+adx_min     = input.int(20,  "ADX Min HTF",    minval=1,  group=gFLT)
+allow_short = input.bool(true, "Activer SHORTS", group=gFLT)
+
+gSW = "3. X-FACTOR Liquidity Sweep (LTF)"
+use_sweep        = input.bool(true,  "Activer Sweep", group=gSW)
+sweep_lookback   = input.int(20,   "Sweep lookback", minval=5, maxval=200, group=gSW)
+sweep_wick_atr   = input.float(0.3, "Wick min xATR", minval=0.05, step=0.05, group=gSW)
+sweep_qty_boost  = input.float(1.5, "Boost si sweep", minval=1.0, maxval=3.0, step=0.1, group=gSW)
+
+gST = "4. Stoic Score"
+stoic_boost_enabled = input.bool(true, "Stoic boost", group=gST)
+atr_mult_p3 = input.float(0.5, "P3 distance daily xATR", minval=0.1, step=0.1, group=gST)
+fib_low     = input.float(0.5,   "P4 Fib low",  minval=0.3, maxval=0.7, step=0.01, group=gST)
+fib_high    = input.float(0.618, "P4 Fib high", minval=0.5, maxval=0.8, step=0.001, group=gST)
+
+gRM = "5. Risk + Smoothing"
+risk_pct        = input.float(7.0,  "Risque pct par trade", minval=0.1, maxval=30.0, step=0.5, group=gRM)
+dd_throttle     = input.float(10.0, "Throttle si DD pct >", minval=0.0, maxval=50.0, step=1.0, group=gRM)
+throttle_factor = input.float(0.5,  "Mult throttle", minval=0.1, maxval=1.0, step=0.1, group=gRM)
+max_risk_cap    = input.float(12.0, "Cap max risque pct", minval=1.0, maxval=30.0, step=0.5, group=gRM)
+use_partial_tp  = input.bool(true,  "TP partiel (lissage)", group=gRM)
+partial_pct     = input.int(30,     "pct fermé au TP1", minval=10, maxval=90, group=gRM)
+tp1_r_multiple  = input.float(2.5,  "TP1 = R x ?", minval=0.5, maxval=10.0, step=0.1, group=gRM)
+move_be_after_tp1 = input.bool(true, "BE apres TP1", group=gRM)
+
+// =============================================================================
+//  HTF CONTEXT — récupéré via request.security
+// =============================================================================
+
+// HTF PP-ST trend + EMA200 + ADX
+htf_pp_trend(prd_h, factor_h, pd_h) =>
+    ph_h = ta.pivothigh(prd_h, prd_h)
+    pl_h = ta.pivotlow(prd_h, prd_h)
+    var float center_h = na
+    last_h = not na(ph_h) ? ph_h : not na(pl_h) ? pl_h : na
+    if not na(last_h)
+        center_h := na(center_h) ? last_h : (center_h * 2 + last_h) / 3
+    up_h = center_h - factor_h * ta.atr(pd_h)
+    dn_h = center_h + factor_h * ta.atr(pd_h)
+    var float tup_h = na
+    var float tdn_h = na
+    var int   tr_h  = 1
+    tup_h := nz(close[1]) > nz(tup_h[1]) ? math.max(up_h, nz(tup_h[1])) : up_h
+    tdn_h := nz(close[1]) < nz(tdn_h[1]) ? math.min(dn_h, nz(tdn_h[1])) : dn_h
+    tr_h  := close > nz(tdn_h[1]) ? 1 : close < nz(tup_h[1]) ? -1 : nz(tr_h[1], 1)
+    tr_h
+
+[htf_trend, htf_ema, htf_adx_v] = request.security(syminfo.tickerid, htf_period, [htf_pp_trend(prd, Factor, Pd), ta.ema(close, ema_len), nz([ta.dmi(adx_len, adx_len)][2])], lookahead=barmerge.lookahead_off)
+
+bool htf_bull  = close > htf_ema
+bool htf_bear  = close < htf_ema
+bool htf_trending = htf_adx_v >= adx_min
+bool htf_trend_long  = htf_trend ==  1
+bool htf_trend_short = htf_trend == -1
+
+// =============================================================================
+//  LTF PP-ST CORE
+// =============================================================================
+float ph = ta.pivothigh(prd, prd)
+float pl = ta.pivotlow(prd, prd)
+
+var float center = na
+float lastpp = not na(ph) ? ph : not na(pl) ? pl : na
+if not na(lastpp)
+    center := na(center) ? lastpp : (center * 2 + lastpp) / 3
+
+float Up = center - Factor * ta.atr(Pd)
+float Dn = center + Factor * ta.atr(Pd)
+
+var float TUp   = na
+var float TDown = na
+var int   Trend = 1
+
+TUp   := nz(close[1]) > nz(TUp[1])   ? math.max(Up, nz(TUp[1]))   : Up
+TDown := nz(close[1]) < nz(TDown[1]) ? math.min(Dn, nz(TDown[1])) : Dn
+Trend := close > nz(TDown[1]) ? 1 : close < nz(TUp[1]) ? -1 : nz(Trend[1], 1)
+
+float TrailSL = Trend == 1 ? TUp : TDown
+atr = ta.atr(14)
+
+// =============================================================================
+//  Stoic Score (LTF, basé sur daily levels)
+// =============================================================================
+[d_close, d_high, d_low] = request.security(syminfo.tickerid, "D", [close[1], high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+var float hcom = na
+var float lcom = na
+new_month = ta.change(month(time)) != 0
+if new_month
+    hcom := d_close
+    lcom := d_close
+else
+    hcom := na(hcom) ? d_close : (d_close > hcom ? d_close : hcom)
+    lcom := na(lcom) ? d_close : (d_close < lcom ? d_close : lcom)
+
+pdh = d_high
+pdl = d_low
+sma20  = ta.sma(close, 20)
+sma200 = ta.sma(close, 200)
+
+p1_long  = not na(lcom) and math.abs(close - lcom) <= atr * 1.0
+p1_short = not na(hcom) and math.abs(close - hcom) <= atr * 1.0
+p2_long  = sma20 > sma200 and close > sma20
+p2_short = sma20 < sma200 and close < sma20
+p3_long  = math.abs(close - pdl) <= atr * atr_mult_p3
+p3_short = math.abs(close - pdh) <= atr * atr_mult_p3
+
+day_range = pdh - pdl
+p4_long  = close >= pdl + day_range * fib_low  and close <= pdl + day_range * fib_high
+p4_short = close >= pdh - day_range * fib_high and close <= pdh - day_range * fib_low
+
+score_long  = (p1_long  ? 1 : 0) + (p2_long  ? 1 : 0) + (p3_long  ? 1 : 0) + (p4_long  ? 1 : 0)
+score_short = (p1_short ? 1 : 0) + (p2_short ? 1 : 0) + (p3_short ? 1 : 0) + (p4_short ? 1 : 0)
+
+// =============================================================================
+//  Liquidity Sweep (LTF)
+// =============================================================================
+float recent_swing_high = ta.highest(high, sweep_lookback)
+float recent_swing_low  = ta.lowest(low,  sweep_lookback)
+
+bool sweep_long  = low  < recent_swing_low[1]  and close > recent_swing_low[1]  and (recent_swing_low[1]  - low)  >= atr * sweep_wick_atr
+bool sweep_short = high > recent_swing_high[1] and close < recent_swing_high[1] and (high - recent_swing_high[1]) >= atr * sweep_wick_atr
+
+var int  sweep_long_bars  = 0
+var int  sweep_short_bars = 0
+sweep_long_bars  := sweep_long  ? 3 : math.max(sweep_long_bars  - 1, 0)
+sweep_short_bars := sweep_short ? 3 : math.max(sweep_short_bars - 1, 0)
+bool sweep_long_active  = use_sweep and sweep_long_bars  > 0
+bool sweep_short_active = use_sweep and sweep_short_bars > 0
+
+// =============================================================================
+//  SIGNAUX MULTI-FACTEUR (LTF trigger + HTF context)
+// =============================================================================
+bool ltf_long_trigger  = Trend ==  1 and nz(Trend[1]) == -1
+bool ltf_short_trigger = Trend == -1 and nz(Trend[1]) ==  1
+
+bool htf_ok_long  = (not require_htf_bias  or htf_bull)  and (not require_htf_trend or htf_trend_long)  and htf_trending
+bool htf_ok_short = (not require_htf_bias  or htf_bear)  and (not require_htf_trend or htf_trend_short) and htf_trending
+
+bool buy_signal   = ltf_long_trigger  and htf_ok_long
+bool short_signal = allow_short and ltf_short_trigger and htf_ok_short
+
+bool sell_signal  = Trend == -1 and nz(Trend[1]) ==  1
+bool cover_signal = Trend ==  1 and nz(Trend[1]) == -1
+
+// =============================================================================
+//  RISK SIZING — Multi-boost
+// =============================================================================
+var float peak_eq = 0.0
+peak_eq := math.max(peak_eq, strategy.equity)
+float current_dd_pct = peak_eq > 0 ? (peak_eq - strategy.equity) / peak_eq * 100 : 0
+bool throttled = current_dd_pct > dd_throttle
+
+float stoic_boost_long  = stoic_boost_enabled ? 1.0 + (score_long  * 0.20) : 1.0
+float stoic_boost_short = stoic_boost_enabled ? 1.0 + (score_short * 0.20) : 1.0
+float sw_boost_long     = sweep_long_active  ? sweep_qty_boost : 1.0
+float sw_boost_short    = sweep_short_active ? sweep_qty_boost : 1.0
+
+float size_factor_long  = (throttled ? throttle_factor : 1.0) * stoic_boost_long  * sw_boost_long
+float size_factor_short = (throttled ? throttle_factor : 1.0) * stoic_boost_short * sw_boost_short
+
+float effective_risk_long  = math.min(risk_pct * size_factor_long,  max_risk_cap)
+float effective_risk_short = math.min(risk_pct * size_factor_short, max_risk_cap)
+
+float risk_cash_long  = strategy.equity * (effective_risk_long  / 100.0)
+float risk_cash_short = strategy.equity * (effective_risk_short / 100.0)
+float stop_dist_long  = math.max(close - TrailSL, atr * 0.5)
+float stop_dist_short = math.max(TrailSL - close, atr * 0.5)
+float qty_long  = stop_dist_long  > 0 ? risk_cash_long  / stop_dist_long  : na
+float qty_short = stop_dist_short > 0 ? risk_cash_short / stop_dist_short : na
+
+// =============================================================================
+//  EXÉCUTION + TP partiel + BE
+// =============================================================================
+var float entry_long  = na
+var float entry_short = na
+var float tp1_long_lvl  = na
+var float tp1_short_lvl = na
+var bool  tp1_long_done = false
+var bool  tp1_short_done = false
+
+if buy_signal and strategy.position_size <= 0
+    if strategy.position_size < 0
+        strategy.close("Short", comment="Cover")
+    strategy.entry("Long", strategy.long, qty=qty_long)
+    entry_long       := close
+    tp1_long_lvl     := close + stop_dist_long * tp1_r_multiple
+    tp1_long_done    := false
+
+if strategy.position_size > 0 and use_partial_tp and not tp1_long_done and high >= tp1_long_lvl
+    strategy.close("Long", qty_percent=partial_pct, comment="TP1")
+    tp1_long_done := true
+
+if strategy.position_size > 0 and tp1_long_done and move_be_after_tp1 and low <= entry_long
+    strategy.close("Long", comment="BE")
+    tp1_long_done := false
+
+if strategy.position_size > 0 and (sell_signal or not htf_bull)
+    strategy.close("Long", comment="ExitL")
+    tp1_long_done := false
+
+if short_signal and strategy.position_size >= 0
+    if strategy.position_size > 0
+        strategy.close("Long", comment="Close")
+    strategy.entry("Short", strategy.short, qty=qty_short)
+    entry_short      := close
+    tp1_short_lvl    := close - stop_dist_short * tp1_r_multiple
+    tp1_short_done   := false
+
+if strategy.position_size < 0 and use_partial_tp and not tp1_short_done and low <= tp1_short_lvl
+    strategy.close("Short", qty_percent=partial_pct, comment="TP1")
+    tp1_short_done := true
+
+if strategy.position_size < 0 and tp1_short_done and move_be_after_tp1 and high >= entry_short
+    strategy.close("Short", comment="BE")
+    tp1_short_done := false
+
+if strategy.position_size < 0 and (cover_signal or not htf_bear)
+    strategy.close("Short", comment="ExitS")
+    tp1_short_done := false
+
+// =============================================================================
+//  VISUALISATION
+// =============================================================================
+color trend_col = Trend == 1 ? color.new(#22c55e, 0) : color.new(#ef4444, 0)
+plot(TrailSL,  "PP-ST LTF", color=trend_col, linewidth=2)
+plot(htf_ema,  "EMA HTF",   color=color.new(#f97316, 0), linewidth=2)
+plot(recent_swing_high, "Swing High", color=color.new(#fbbf24, 70), style=plot.style_circles)
+plot(recent_swing_low,  "Swing Low",  color=color.new(#3b82f6, 70), style=plot.style_circles)
+
+bgcolor(not htf_trending      ? color.new(color.gray, 92) : na, title="HTF non-trending")
+bgcolor(throttled             ? color.new(#fbbf24, 88)    : na, title="DD Throttle")
+bgcolor(sweep_long_active     ? color.new(#22c55e, 88)    : na, title="SWEEP L")
+bgcolor(sweep_short_active    ? color.new(#ef4444, 88)    : na, title="SWEEP S")
+
+plotshape(sweep_long,  "Sweep L", shape.diamond, location.belowbar, color.new(#3b82f6, 0), size=size.tiny)
+plotshape(sweep_short, "Sweep S", shape.diamond, location.abovebar, color.new(#fbbf24, 0), size=size.tiny)
+plotshape(buy_signal,   "Buy",   shape.labelup,   location.belowbar, color.new(#22c55e, 0), text="L", textcolor=color.black, size=size.small)
+plotshape(short_signal, "Short", shape.labeldown, location.abovebar, color.new(#ef4444, 0), text="S", textcolor=color.white, size=size.small)

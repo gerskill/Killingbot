@@ -1,28 +1,51 @@
 """
 StrategyExplorer — Teste des variations de KB-v2.1 sur les 6 paires crypto.
 Demande contexte à MemoryAgent → backteste → rapporte.
+
+⚠️ SOURCE DE DONNÉES — changement du 2026-07-25
+   Cet explorateur utilisait yfinance. Deux conséquences mesurées :
+
+   1. Désalignement backtest/exécution : backtest sur données Yahoo, exécution
+      sur Binance. Un backtest sur une source A déployé sur une source B n'est
+      pas interprétable.
+   2. Historique intraday tronqué : yfinance plafonne le 15m à 60 jours. La
+      variante KB_15m a donc été « validée » sur 60 jours de données, puis
+      s'est révélée perdante en live (PF 0.465).
+
+   Ces deux défauts, combinés à l'absence de validation.py dans la boucle,
+   expliquent les 10 fausses stratégies du sweep de mai 2026.
+
+   Source unique désormais : core/data_source.py (Binance + cache TradingView).
+   Yahoo Finance est retiré et ne doit pas être réintroduit.
 """
+import sys
 import warnings
 warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 from datetime import datetime, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import validation
+from core.data_source import DataSourceError, load
+
 VAULT = Path(__file__).parent.parent / "vault"
 
+# Symboles Binance directs — plus de table de correspondance vers Yahoo :
+# la source du backtest est désormais celle de l'exécution.
 PAIRS = {
-    "BTCUSDT": "BTC-USD",
-    "ETHUSDT": "ETH-USD",
-    "SOLUSDT": "SOL-USD",
-    "LINKUSDT": "LINK-USD",
-    "NEARUSDT": "NEAR-USD",
-    "ATOMUSDT": "ATOM-USD",
+    "BTCUSDT": "BTCUSDT",
+    "ETHUSDT": "ETHUSDT",
+    "SOLUSDT": "SOLUSDT",
+    "LINKUSDT": "LINKUSDT",
+    "NEARUSDT": "NEARUSDT",
+    "ATOMUSDT": "ATOMUSDT",
 }
 INTERVAL = "1h"
-PERIOD_DAYS = 365  # 1 an
+PERIOD_DAYS = 365  # borne par défaut ; Binance fournit l'historique complet
 
 
 # ── Variations à explorer (ordre priorisé) ─────────────────────────────────────
@@ -88,9 +111,10 @@ PREDEFINED_VARIATIONS = [
     {**BEST, "_name": "KB_SL1_RR4",   "_desc": "SL=1xATR TP=4xATR",          "atr_mult": 1.0, "rr": 4.0},
     {**BEST, "_name": "KB_SL2_RR4",   "_desc": "SL=2xATR TP=4xATR plus large","atr_mult": 2.0, "rr": 4.0},
 
-    # ── Round 1 : 15m TF (NEAR seulement via tf_override) ─────────────────────
-    # Note: yfinance 15m = 60 jours max, backtest plus court
-    {**BEST, "_name": "KB_15m",        "_desc": "TF 15m (60j data)",          "tf_resample": "15min", "cooldown_bars": 6},
+    # ── Round 1 : 15m TF ──────────────────────────────────────────────────────
+    # Historique complet depuis le passage à Binance (yfinance plafonnait à 60j,
+    # ce qui avait « validé » KB_15m sur un échantillon minuscule — PF 0.465 en live).
+    {**BEST, "_name": "KB_15m",        "_desc": "TF 15m",                     "tf_resample": "15min", "cooldown_bars": 6},
     {**BEST, "_name": "KB_1h",         "_desc": "TF 1H (compromis 4H/15m)",   "tf_resample": "1h",    "cooldown_bars": 4},
 
     # ── Round 1 : Multi-TF confluence ─────────────────────────────────────────
@@ -345,7 +369,8 @@ def run_backtest(df_1h: pd.DataFrame, params: dict) -> dict:
         return {"error": "Aucun trade"}
 
     total_return = (capital / 10000 - 1) * 100
-    n_months = PERIOD_DAYS / 30
+    span_days = max((df.index[-1] - df.index[0]).days, 1)
+    n_months = span_days / 30
     monthly_return = ((capital / 10000) ** (1 / n_months) - 1) * 100
     wins = [t for t in trades if t["pct"] > 0]
     losses = [t for t in trades if t["pct"] <= 0]
@@ -394,16 +419,22 @@ class StrategyExplorer:
         with open(VAULT / "AGENT_LOG.md", "a") as f:
             f.write(msg + "\n")
 
-    def _fetch_data(self, yf_symbol: str) -> pd.DataFrame | None:
-        end = datetime.now()
-        start = end - timedelta(days=PERIOD_DAYS + 30)
-        df = yf.download(yf_symbol, start=start, end=end, interval=INTERVAL,
-                         progress=False, auto_adjust=True)
-        if df.empty or len(df) < 100:
+    def _fetch_data(self, symbol: str) -> pd.DataFrame | None:
+        """Données via core.data_source — même source que l'exécution.
+
+        Colonnes capitalisées en sortie : le moteur de backtest historique de
+        ce fichier attend le format yfinance (Open/High/Low/Close/Volume). La
+        source change, le contrat interne reste.
+        """
+        start = (datetime.now() - timedelta(days=PERIOD_DAYS + 30)).strftime("%Y-%m-%d")
+        try:
+            df = load(symbol, INTERVAL, start=start)
+        except DataSourceError as e:
+            self._log(f"**{self.name}** → ⚠️ données indisponibles {symbol} : {e}")
             return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return df
+        if len(df) < 100:
+            return None
+        return df.rename(columns=str.capitalize)
 
     def explore_one(self, variation: dict) -> dict:
         """Backteste une variation sur toutes les paires, retourne métriques agrégées."""
@@ -416,18 +447,28 @@ class StrategyExplorer:
             return {}
 
         all_results = []
-        for tv_sym, yf_sym in PAIRS.items():
-            df = self._fetch_data(yf_sym)
+        oos_results = []
+        for tv_sym, sym in PAIRS.items():
+            df = self._fetch_data(sym)
             if df is None:
-                self._log(f"**{self.name}** → ⚠️ pas de data pour {yf_sym}")
+                self._log(f"**{self.name}** → ⚠️ pas de data pour {sym}")
                 continue
-            result = run_backtest(df, variation)
+            # Walk-forward : IS/OOS jamais mélangés. On score sur IS, l'OOS
+            # sert uniquement à détecter l'overfitting (jamais utilisé pour choisir).
+            wf = validation.walk_forward_split(run_backtest, df, variation)
+            result, oos = wf["is"], wf["oos"]
             if "error" not in result:
                 result["symbol"] = tv_sym
                 all_results.append(result)
+                degr = validation.oos_degradation_pct(result, oos)
+                oos["symbol"] = tv_sym
+                oos["degradation_pct"] = degr
+                oos_results.append(oos)
+                degr_str = f"{degr:+.0f}%" if degr is not None else "N/A"
                 self._log(
-                    f"**{self.name}** → {tv_sym}: {result['monthly_return_pct']:.1f}%/mois "
-                    f"| WR {result['win_rate_pct']:.0f}% | {result['total_trades']} trades"
+                    f"**{self.name}** → {tv_sym}: {result['monthly_return_pct']:.1f}%/mois IS "
+                    f"| WR {result['win_rate_pct']:.0f}% | {result['total_trades']} trades "
+                    f"| OOS degr {degr_str}"
                 )
 
         if not all_results:
@@ -439,6 +480,9 @@ class StrategyExplorer:
             if total_w == 0:
                 return 0
             return sum(r[key] * r["total_trades"] for r in all_results) / total_w
+
+        valid_degr = [o["degradation_pct"] for o in oos_results if o["degradation_pct"] is not None]
+        oos_valid = [o for o in oos_results if "error" not in o and o.get("total_trades", 0) > 0]
 
         agg = {
             "total_trades": sum(r["total_trades"] for r in all_results),
@@ -452,6 +496,12 @@ class StrategyExplorer:
             "sharpe_ratio": round(wavg("sharpe_ratio"), 2),
             "pairs_tested": len(all_results),
             "per_pair": {r["symbol"]: {k: v for k, v in r.items() if k != "symbol"} for r in all_results},
+            # ── Out-of-sample (garde-fou anti-overfitting) ──────────────────
+            "oos_monthly_return_pct": round(
+                sum(o["monthly_return_pct"] for o in oos_valid) / len(oos_valid), 2
+            ) if oos_valid else None,
+            "oos_degradation_pct": round(sum(valid_degr) / len(valid_degr), 1) if valid_degr else None,
+            "oos_pairs_with_trades": len(oos_valid),
         }
 
         # Reporting vers MemoryAgent
@@ -459,6 +509,32 @@ class StrategyExplorer:
         clean_params["_parent"] = variation.get("_parent", "KB-v2.1")
         self.mem.receive_result(name, clean_params, agg)
         return agg
+
+    def stability_check(self, params: dict, n_sims: int = 15) -> dict:
+        """
+        Monte Carlo sur le gagnant final : perturbe les params ±10%, revérifie
+        que la perf tient. Appelé une seule fois sur le candidat final, pas sur
+        chaque variation testée (coûteux, utile seulement pour la décision finale).
+        """
+        stabilities = []
+        for tv_sym, sym in PAIRS.items():
+            df = self._fetch_data(sym)
+            if df is None:
+                continue
+            r = validation.monte_carlo_stability(run_backtest, df, params, n_sims=n_sims)
+            if "error" not in r:
+                r["symbol"] = tv_sym
+                stabilities.append(r)
+
+        if not stabilities:
+            return {"error": "Aucune simulation valide"}
+
+        return {
+            "mc_stability_pct_avg": round(
+                sum(s["mc_stability_pct"] for s in stabilities) / len(stabilities), 1
+            ),
+            "per_pair": stabilities,
+        }
 
     def explore_all_predefined(self):
         """Parcourt toutes les variations prédéfinies."""
@@ -475,6 +551,19 @@ class StrategyExplorer:
         self._log(f"**{self.name}** → 🤝 {len(suggestions)} suggestions reçues de MemoryAgent")
         for s in suggestions:
             name = s.get("_name_hint", f"KB_SUGGESTED_{len(self.mem.memory['explored'])}")
+            s["_name"] = name
+            s["_parent"] = self.mem.memory.get("best", {}).get("name", "KB-v2.1")
+            self.explore_one(s)
+
+    def explore_suggested_llm(self, n: int = 3):
+        """Demande à Claude n nouvelles combinaisons créatives et les explore."""
+        suggestions = self.mem.suggest_next_llm(n=n)
+        if not suggestions:
+            self._log(f"**{self.name}** → pas de suggestions LLM (clé API absente ou erreur)")
+            return
+        self._log(f"**{self.name}** → 🧠 {len(suggestions)} suggestions LLM reçues")
+        for s in suggestions:
+            name = s.get("_name_hint", f"KB_LLM_{len(self.mem.memory['explored'])}")
             s["_name"] = name
             s["_parent"] = self.mem.memory.get("best", {}).get("name", "KB-v2.1")
             self.explore_one(s)

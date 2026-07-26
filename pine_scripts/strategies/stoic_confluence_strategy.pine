@@ -1,0 +1,255 @@
+//@version=6
+// =============================================================================
+//  STOIC CONFLUENCE STRATEGY — Killingbot (Backtest wrapper)
+//  Source : Stoic Trader Protocol (@StoicTA) — adapté Killingbot
+//  Version 1.0 — 2026-06-07
+//
+//  RÔLE :
+//    Stratégie de TEST (pas la stratégie finale). Mesure l'edge statistique
+//    du score 4 piliers Stoic en wrapper minimal.
+//
+//  RÈGLES DE TEST :
+//    - Entrée : score ≥ seuil dans une direction (LONG ou SHORT)
+//    - Stop   : ATR(14) × atr_mult_stop
+//    - Target : R:R fixe (default 1:2) — sortie complète
+//    - Risque : risk_pct du capital par trade
+//    - Cooldown : nb barres entre 2 trades même direction
+//    - Une seule position ouverte à la fois
+//
+//  ORDRE DU FLUX (CLAUDE.md) : C1-C7 respecté
+// =============================================================================
+
+strategy(
+     title              = "Stoic Confluence Strategy [Killingbot]",
+     shorttitle         = "STOIC-STRAT",
+     overlay            = true,
+     initial_capital    = 10000,
+     default_qty_type   = strategy.percent_of_equity,
+     default_qty_value  = 100,
+     commission_type    = strategy.commission.percent,
+     commission_value   = 0.05,
+     slippage           = 2,
+     pyramiding         = 0,
+     calc_on_every_tick = false,
+     process_orders_on_close = true,
+     max_lines_count    = 100,
+     max_labels_count   = 100)
+
+// =============================================================================
+//  INPUTS
+// =============================================================================
+
+// ── COUCHE 1 : HTF Context ──────────────────────────────────────────────────
+gHTF = "1. HTF Context"
+show_levels = input.bool(true, "Afficher niveaux HCOM/LCOM/PDH/PDL/PDC", group=gHTF)
+
+// ── COUCHE 2 : SMA Bias ─────────────────────────────────────────────────────
+gSMA = "2. Session Bias — SMA"
+sma_fast = input.int(20,  "SMA Fast",  minval=2,  group=gSMA)
+sma_slow = input.int(200, "SMA Slow",  minval=10, group=gSMA)
+
+// ── COUCHE 4 : ATR & Filtres ────────────────────────────────────────────────
+gATR = "3. ATR & Filtres"
+atr_len     = input.int(14,    "ATR Length", minval=1, group=gATR)
+atr_mult_p3 = input.float(0.5, "P3 — Distance max niveau daily (×ATR)", minval=0.1, step=0.1, group=gATR)
+fib_low     = input.float(0.5,   "P4 — Fib retracement bas",   minval=0.3, maxval=0.7, step=0.01, group=gATR)
+fib_high    = input.float(0.618, "P4 — Fib retracement haut",  minval=0.5, maxval=0.8, step=0.001, group=gATR)
+
+// ── COUCHE 5 : Signal Logic ─────────────────────────────────────────────────
+gSIG = "4. Signal Logic"
+min_score    = input.int(3, "Score min pour entrée (1-4)", minval=1, maxval=4, group=gSIG)
+allow_long   = input.bool(true,  "Autoriser les LONGS",  group=gSIG)
+allow_short  = input.bool(true,  "Autoriser les SHORTS", group=gSIG)
+cooldown_bars = input.int(5, "Cooldown entre trades (barres)", minval=0, group=gSIG)
+
+// ── COUCHE 6 : Risk Management ──────────────────────────────────────────────
+gRM = "5. Risk Management"
+risk_pct        = input.float(1.0, "Risque par trade (% capital)", minval=0.1, maxval=5.0, step=0.1, group=gRM)
+atr_mult_stop   = input.float(1.5, "Stop = ATR × ?", minval=0.5, maxval=5.0, step=0.1, group=gRM)
+rr_ratio        = input.float(2.0, "R:R Target",     minval=1.0, maxval=10.0, step=0.5, group=gRM)
+use_trailing    = input.bool(false, "Utiliser trailing stop après TP1", group=gRM)
+
+// ── COUCHE 4 bis : Filtres temporels ────────────────────────────────────────
+gTIME = "6. Filtres temporels (backtest)"
+use_date_filter = input.bool(false, "Filtrer par date", group=gTIME)
+start_date  = input.time(timestamp("2020-01-01 00:00"), "Date début", group=gTIME)
+end_date    = input.time(timestamp("2026-12-31 00:00"), "Date fin",   group=gTIME)
+
+in_date_range = not use_date_filter or (time >= start_date and time <= end_date)
+
+// =============================================================================
+//  COUCHE 1 — HCOM / LCOM mensuels
+// =============================================================================
+
+[d_close, d_high, d_low] = request.security(syminfo.tickerid, "D", [close[1], high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+var float hcom = na
+var float lcom = na
+new_month = ta.change(month(time)) != 0
+
+if new_month
+    hcom := d_close
+    lcom := d_close
+else
+    hcom := na(hcom) ? d_close : (d_close > hcom ? d_close : hcom)
+    lcom := na(lcom) ? d_close : (d_close < lcom ? d_close : lcom)
+
+// =============================================================================
+//  COUCHE 3 — PDH / PDL / PDC
+// =============================================================================
+
+pdh = d_high
+pdl = d_low
+pdc = d_close
+
+// =============================================================================
+//  COUCHE 2 — SMA & ATR
+// =============================================================================
+
+sma20  = ta.sma(close, sma_fast)
+sma200 = ta.sma(close, sma_slow)
+atr    = ta.atr(atr_len)
+
+// =============================================================================
+//  COUCHE 5 — SCORING 4 PILIERS
+// =============================================================================
+
+// P1 — Monthly Extreme proximity
+p1_long  = not na(lcom) and math.abs(close - lcom) <= atr * 1.0
+p1_short = not na(hcom) and math.abs(close - hcom) <= atr * 1.0
+
+// P2 — SMA Bias
+p2_long  = sma20 > sma200 and close > sma20
+p2_short = sma20 < sma200 and close < sma20
+
+// P3 — Daily Level proximity
+p3_long  = math.abs(close - pdl) <= atr * atr_mult_p3
+p3_short = math.abs(close - pdh) <= atr * atr_mult_p3
+
+// P4 — Fib Zone (retracement 50-61.8% du range PDH-PDL)
+day_range = pdh - pdl
+fib_long_low   = pdl + day_range * fib_low
+fib_long_high  = pdl + day_range * fib_high
+fib_short_low  = pdh - day_range * fib_high
+fib_short_high = pdh - day_range * fib_low
+
+p4_long  = close >= fib_long_low  and close <= fib_long_high
+p4_short = close >= fib_short_low and close <= fib_short_high
+
+score_long  = (p1_long  ? 1 : 0) + (p2_long  ? 1 : 0) + (p3_long  ? 1 : 0) + (p4_long  ? 1 : 0)
+score_short = (p1_short ? 1 : 0) + (p2_short ? 1 : 0) + (p3_short ? 1 : 0) + (p4_short ? 1 : 0)
+
+// =============================================================================
+//  COUCHE 4 — Filtre Range/Robustesse
+//  Empêche les trades quand SMA20 et SMA200 sont entrelacées (chop)
+// =============================================================================
+
+sma_separation = math.abs(sma20 - sma200) / sma200 * 100
+robust_filter  = sma_separation >= 0.10  // au moins 0.10% d'écart
+
+// =============================================================================
+//  COUCHE 5 bis — Cooldown
+// =============================================================================
+
+var int last_entry_bar = -1000
+bars_since_entry = bar_index - last_entry_bar
+
+// =============================================================================
+//  COUCHE 6 — RISK MANAGEMENT : calcul taille position
+// =============================================================================
+
+stop_distance = atr * atr_mult_stop
+risk_cash     = strategy.equity * (risk_pct / 100.0)
+qty_calc      = stop_distance > 0 ? risk_cash / stop_distance : 0
+
+// =============================================================================
+//  COUCHE 7 — EXÉCUTION
+// =============================================================================
+
+long_signal  = allow_long  and score_long  >= min_score and robust_filter and bars_since_entry >= cooldown_bars and in_date_range and barstate.isconfirmed
+short_signal = allow_short and score_short >= min_score and robust_filter and bars_since_entry >= cooldown_bars and in_date_range and barstate.isconfirmed
+
+// Calcul SL/TP pour les ordres
+long_stop  = close - stop_distance
+long_tp    = close + stop_distance * rr_ratio
+short_stop = close + stop_distance
+short_tp   = close - stop_distance * rr_ratio
+
+// === ENTRÉES ===
+if long_signal and strategy.position_size == 0
+    strategy.entry("L", strategy.long, qty=qty_calc)
+    last_entry_bar := bar_index
+
+if short_signal and strategy.position_size == 0
+    strategy.entry("S", strategy.short, qty=qty_calc)
+    last_entry_bar := bar_index
+
+// === SORTIES ===
+if strategy.position_size > 0
+    strategy.exit("L-Exit", "L", stop=long_stop, limit=long_tp)
+
+if strategy.position_size < 0
+    strategy.exit("S-Exit", "S", stop=short_stop, limit=short_tp)
+
+// =============================================================================
+//  VISUALISATION
+// =============================================================================
+
+plot(show_levels ? hcom : na, "HCOM", color=color.new(#ef4444, 0), linewidth=2, style=plot.style_linebr)
+plot(show_levels ? lcom : na, "LCOM", color=color.new(#22c55e, 0), linewidth=2, style=plot.style_linebr)
+plot(show_levels ? pdh  : na, "PDH",  color=color.new(#f59e0b, 30), linewidth=1, style=plot.style_linebr)
+plot(show_levels ? pdl  : na, "PDL",  color=color.new(#0ea5e9, 30), linewidth=1, style=plot.style_linebr)
+plot(sma20,  "SMA 20",  color=color.new(#3b82f6, 0), linewidth=1)
+plot(sma200, "SMA 200", color=color.new(#f97316, 0), linewidth=2)
+
+bgcolor(score_long  >= min_score ? color.new(#22c55e, 92) : na, title="Long Setup BG")
+bgcolor(score_short >= min_score ? color.new(#ef4444, 92) : na, title="Short Setup BG")
+
+plotshape(long_signal,  title="LONG Entry",  location=location.belowbar, style=shape.triangleup,   color=color.new(#22c55e, 0), size=size.small, text="L")
+plotshape(short_signal, title="SHORT Entry", location=location.abovebar, style=shape.triangledown, color=color.new(#ef4444, 0), size=size.small, text="S")
+
+// =============================================================================
+//  DASHBOARD — stats live pendant le backtest
+// =============================================================================
+
+var table stats = table.new(position.top_right, columns=2, rows=10, bgcolor=color.new(#0f172a, 10), border_width=1, border_color=color.new(#334155, 50))
+
+if barstate.islast
+    table.clear(stats, 0, 0, 1, 9)
+
+    table.cell(stats, 0, 0, "👑 STOIC STRAT",  text_color=color.white, bgcolor=color.new(#1e293b, 0))
+    table.cell(stats, 1, 0, syminfo.ticker + " " + timeframe.period, text_color=color.new(#94a3b8, 0), bgcolor=color.new(#1e293b, 0))
+
+    table.cell(stats, 0, 1, "Trades",       text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 1, str.tostring(strategy.closedtrades), text_color=color.white)
+
+    win_rate = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100 : 0
+    table.cell(stats, 0, 2, "Win Rate",     text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 2, str.tostring(win_rate, "0.0") + "%", text_color=win_rate >= 50 ? color.new(#22c55e, 0) : color.new(#f59e0b, 0))
+
+    pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : 0
+    table.cell(stats, 0, 3, "Profit Factor", text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 3, str.tostring(pf, "0.00"), text_color=pf >= 1.5 ? color.new(#22c55e, 0) : color.new(#f59e0b, 0))
+
+    net = strategy.netprofit
+    table.cell(stats, 0, 4, "Net Profit",    text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 4, "$" + str.tostring(net, "0.00"), text_color=net >= 0 ? color.new(#22c55e, 0) : color.new(#ef4444, 0))
+
+    ret_pct = strategy.netprofit / strategy.initial_capital * 100
+    table.cell(stats, 0, 5, "Net Return %",  text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 5, str.tostring(ret_pct, "0.00") + "%", text_color=ret_pct >= 0 ? color.new(#22c55e, 0) : color.new(#ef4444, 0))
+
+    dd_pct = strategy.max_drawdown / strategy.initial_capital * 100
+    table.cell(stats, 0, 6, "Max Drawdown",  text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 6, str.tostring(dd_pct, "0.00") + "%", text_color=color.new(#ef4444, 0))
+
+    avg_trade = strategy.closedtrades > 0 ? strategy.netprofit / strategy.closedtrades : 0
+    table.cell(stats, 0, 7, "Avg Trade",     text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 7, "$" + str.tostring(avg_trade, "0.00"), text_color=color.white)
+
+    table.cell(stats, 0, 8, "Score actuel",  text_color=color.new(#cbd5e1, 0))
+    score_now_txt = "L:" + str.tostring(score_long) + " S:" + str.tostring(score_short)
+    table.cell(stats, 1, 8, score_now_txt, text_color=color.white)
+
+    table.cell(stats, 0, 9, "Min Score",     text_color=color.new(#cbd5e1, 0))
+    table.cell(stats, 1, 9, str.tostring(min_score) + "/4", text_color=color.new(#fbbf24, 0))

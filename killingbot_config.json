@@ -1,0 +1,37 @@
+{
+  "version": "v1.0",
+  "active_strategy": "KB_15m",
+  "updated_at": "2026-07-11T19:45:00",
+  "strategy": {
+    "indicators": "EMA7, EMA21, Kijun26, ATR14",
+    "entry_conditions": "crossover(EMA7, EMA21) + close > Kijun + ATR% in [0.3, 2.0]",
+    "exit_conditions": "crossunder(EMA7, EMA21) OR close < Kijun; TP scale 50% @1.5R, 50% @3.0R",
+    "risk_params": {
+      "risk_per_trade_pct": 1.0,
+      "leverage": 2,
+      "sl_atr_mult": 1.5,
+      "tp1_rr": 1.5,
+      "tp2_rr": 3.0,
+      "position_size": "1_month_capital_flow"
+    },
+    "params": {
+      "ema_fast": 7,
+      "ema_slow": 21,
+      "kijun_len": 26,
+      "atr_len": 14,
+      "atr_mult": 1.5,
+      "atr_min_pct": 0.3,
+      "atr_max_pct": 2.0,
+      "cooldown_bars": 3
+    }
+  },
+  "guardrails": {
+    "max_leverage": 5,
+    "max_drawdown_pct": 20,
+    "stop_trading_if_dd_exceeds_pct": 18,
+    "weekly_dd_force_risk_reduction_pct": -5,
+    "max_params_changed_per_iteration": 2,
+    "flip_flop_lookback_iterations": 3
+  },
+  "deploy_state": "paper"
+}

@@ -1,0 +1,356 @@
+//@version=6
+strategy("🏛️ KILLINGBOT — Stoic Lens Strategy v1.0",
+     shorttitle          = "StoicLens",
+     overlay             = true,
+     default_qty_type    = strategy.percent_of_equity,
+     default_qty_value   = 1,
+     initial_capital     = 10000,
+     commission_type     = strategy.commission.percent,
+     commission_value    = 0.04,
+     slippage            = 2,
+     max_bars_back       = 500,
+     pyramiding          = 0)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ██ KILLINGBOT — STOIC LENS STRATEGY v1.0
+// ██ Framework @StoicTA | Architecture Ordre du Flux x7 Couches
+// ██ Piliers : HCOM/LCOM · PDH/PDL/PDC · SMA20/200 · B&R/SFP · GoldenSBS · Fib
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────
+// SECTION A — INPUTS (groupés par couche)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Couche 1 — HTF Bias
+i_htf_tf        = input.string("D",  "Timeframe HTF pour PDH/PDL/PDC",  group="C1 · Market Outlook", options=["D", "W", "M"])
+
+// Couche 3 — SMAs
+i_sma_fast      = input.int(20,   "SMA Rapide",        group="C3 · Structure & Niveaux", minval=5,   maxval=50)
+i_sma_slow      = input.int(200,  "SMA Lente",         group="C3 · Structure & Niveaux", minval=50,  maxval=500)
+i_show_sma      = input.bool(true, "Afficher SMAs",    group="C3 · Structure & Niveaux")
+i_show_lvls     = input.bool(true, "Afficher PDH/PDL/PDC", group="C3 · Structure & Niveaux")
+
+// Couche 4 — Filtre Range
+i_no_edge_pct   = input.float(0.35, "No Edge Zone (% du range)", group="C4 · Filtre Range", minval=0.1, maxval=0.6, step=0.05, tooltip="Zone centrale du range quotidien = NO EDGE")
+i_min_vol_pct   = input.float(0.05, "Volatilité min (% ATR/prix)", group="C4 · Filtre Range", minval=0.01, maxval=0.5, step=0.01)
+
+// Couche 5 — Setup Quality
+i_min_score     = input.int(3, "Score minimum (4=Golden SBS)",  group="C5 · Setup Quality", minval=1, maxval=4, tooltip="3=B&R Standard | 4=Golden SBS — tous piliers alignés")
+i_fib_tol       = input.float(0.6, "Tolérance zone Fib (×ATR)", group="C5 · Setup Quality", minval=0.1, maxval=2.0, step=0.1)
+
+// Couche 6 — Risk Management
+i_risk_pct      = input.float(1.0,  "Risque par trade (%)",         group="C6 · Risk Management", minval=0.1, maxval=5.0, step=0.1)
+i_rr_tp1        = input.float(2.0,  "RR Target 1 (TP1 partiel)",    group="C6 · Risk Management", minval=1.0, step=0.5)
+i_rr_tp2        = input.float(3.5,  "RR Target 2 (TP2 runner)",     group="C6 · Risk Management", minval=1.5, step=0.5)
+i_atr_sl_mult   = input.float(1.5,  "SL = PDL/PDH + ATR×mult",      group="C6 · Risk Management", minval=0.5, maxval=5.0, step=0.25)
+i_trail_atr     = input.float(0.8,  "Trail Stop (×ATR)",             group="C6 · Risk Management", minval=0.2, maxval=3.0, step=0.1)
+
+// Couche 7 — Alertes
+i_webhook       = input.bool(true,  "Envoyer alertes webhook JSON",  group="C7 · Alertes & Exécution")
+i_draw_levels   = input.bool(true,  "Dessiner SL/TP sur chart",      group="C7 · Alertes & Exécution")
+i_show_dash     = input.bool(true,  "Afficher dashboard",             group="C7 · Alertes & Exécution")
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 1 — MARKET OUTLOOK : Données HTF (Daily)
+// ─────────────────────────────────────────────────────────────────────────
+
+// PDH / PDL / PDC / PDO du jour précédent via request.security
+[pdh, pdl, pdc, pdo]       = request.security(syminfo.tickerid, i_htf_tf, [high[1], low[1], close[1], open[1]], lookahead=barmerge.lookahead_on)
+[phow, plow]                = request.security(syminfo.tickerid, "W",      [high[1], low[1]],                   lookahead=barmerge.lookahead_on)
+[d_sma20, d_sma200]         = request.security(syminfo.tickerid, i_htf_tf, [ta.sma(close, i_sma_fast), ta.sma(close, i_sma_slow)], lookahead=barmerge.lookahead_off)
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 2 — CONFLUENCES : HCOM / LCOM (momentum candle HTF)
+// ─────────────────────────────────────────────────────────────────────────
+
+bool hcom = pdc > pdo         // Higher Close Over (Open) → biais haussier
+bool lcom = pdc < pdo         // Lower  Close Over (Open) → biais baissier
+bool doji = pdc == pdo        // Doji → pas de biais clair
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 3 — STRUCTURE & LIQUIDITÉ : SMAs + Niveaux clés
+// ─────────────────────────────────────────────────────────────────────────
+
+float sma_fast  = ta.sma(close, i_sma_fast)
+float sma_slow  = ta.sma(close, i_sma_slow)
+float atr14     = ta.atr(14)
+
+// Biais SMA sur TF courant
+bool sma_bull   = sma_fast > sma_slow
+bool sma_bear   = sma_fast < sma_slow
+
+// Biais SMA Daily
+bool d_bull     = d_sma20 > d_sma200
+bool d_bear     = d_sma20 < d_sma200
+
+// Tolérance de proximité des niveaux (0.2% du prix OU 0.5×ATR)
+float tol       = math.max(close * 0.002, atr14 * 0.5)
+
+bool near_pdh   = math.abs(close - pdh)  <= tol
+bool near_pdl   = math.abs(close - pdl)  <= tol
+bool near_pdc   = math.abs(close - pdc)  <= tol * 1.5
+bool near_phow  = math.abs(close - phow) <= tol
+bool near_plow  = math.abs(close - plow) <= tol
+
+// Fib Geometry — zones d'entrée sur retracement de la veille
+float fib_range     = math.max(pdh - pdl, atr14 * 0.1)   // Évite division par 0
+float fib_618_long  = pdh - fib_range * 0.618             // 61.8% retracement depuis PDH
+float fib_786_long  = pdh - fib_range * 0.786             // 78.6% retracement depuis PDH
+float fib_618_short = pdl + fib_range * 0.618             // 61.8% retrace depuis PDL
+float fib_786_short = pdl + fib_range * 0.786             // 78.6% retrace depuis PDL
+
+// In Fib entry zone?
+bool in_fib_long    = close <= fib_618_long  + atr14 * i_fib_tol and close >= fib_786_long  - atr14 * i_fib_tol
+bool in_fib_short   = close >= fib_618_short - atr14 * i_fib_tol and close <= fib_786_short + atr14 * i_fib_tol
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 4 — FILTRE RANGE & ROBUSTESSE : No Edge Zone
+// ─────────────────────────────────────────────────────────────────────────
+
+// Zone centrale du range = pas de niveau clair = NO EDGE
+float mid_low   = pdl + fib_range * i_no_edge_pct
+float mid_high  = pdh - fib_range * i_no_edge_pct
+bool  mid_zone  = close > mid_low and close < mid_high
+bool  no_edge   = mid_zone and not near_pdh and not near_pdl and not near_pdc and not near_phow and not near_plow and not in_fib_long and not in_fib_short
+
+// Volatilité suffisante
+bool  has_vol   = atr14 >= close * (i_min_vol_pct / 100)
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 5 — QUALITÉ DU SETUP : Golden SBS Scoring (0–4)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Pattern B&R (Break and Retest) — prix casse un niveau puis revient le tester
+bool bnr_long   = near_pdc and close[1] < pdc and close >= pdc   // Cassure PDC + retest depuis dessus
+bool bnr_short  = near_pdc and close[1] > pdc and close <= pdc   // Cassure PDC + retest depuis dessous
+
+bool bnr2_long  = near_pdl and close[1] < pdl and close >= pdl   // SFP style : sweep PDL puis rejection
+bool bnr2_short = near_pdh and close[1] > pdh and close <= pdh   // SFP style : sweep PDH puis rejection
+
+// Pattern SFP (Swing Failure Pattern)
+bool sfp_long   = low < pdl  and close > pdl  and close > open   // Sweep PDL + fermeture bullish
+bool sfp_short  = high > pdh and close < pdh  and close < open   // Sweep PDH + fermeture bearish
+
+// Confluence de pattern
+bool pattern_l  = bnr_long  or bnr2_long  or sfp_long  or (near_pdl and close > open)  or (in_fib_long  and close > open)
+bool pattern_s  = bnr_short or bnr2_short or sfp_short or (near_pdh and close < open)  or (in_fib_short and close < open)
+
+// ── Score Long (4 piliers = Golden SBS) ──
+int score_long  = (hcom ? 1 : 0) + ((sma_bull or d_bull) ? 1 : 0) + ((near_pdl or near_pdc or near_plow) ? 1 : 0) + (pattern_l ? 1 : 0)
+
+// ── Score Short (4 piliers = Golden SBS) ──
+int score_short = (lcom ? 1 : 0) + ((sma_bear or d_bear) ? 1 : 0) + ((near_pdh or near_pdc or near_phow) ? 1 : 0) + (pattern_s ? 1 : 0)
+
+bool golden_l   = score_long  == 4
+bool golden_s   = score_short == 4
+
+// Conditions d'entrée finales
+bool entry_long  = score_long  >= i_min_score and not no_edge and has_vol and not doji and strategy.position_size == 0
+bool entry_short = score_short >= i_min_score and not no_edge and has_vol and not doji and strategy.position_size == 0
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 6 — RISK MANAGEMENT : SL / TP1 / TP2 / Trail
+// ─────────────────────────────────────────────────────────────────────────
+
+// SL basé sur le niveau de structure opposé + buffer ATR
+float sl_long    = pdl  - atr14 * i_atr_sl_mult
+float sl_short   = pdh  + atr14 * i_atr_sl_mult
+float risk_long  = math.max(close - sl_long,  atr14 * 0.5)
+float risk_short = math.max(sl_short - close, atr14 * 0.5)
+
+// TP dynamiques (RR × risque)
+float tp1_long   = close + risk_long  * i_rr_tp1
+float tp1_short  = close - risk_short * i_rr_tp1
+float tp2_long   = close + risk_long  * i_rr_tp2
+float tp2_short  = close - risk_short * i_rr_tp2
+
+// Trail offset en ticks (démarre au TP1, trail = 0.8×ATR)
+int   trail_tks  = int(math.max(1, math.round(atr14 * i_trail_atr / syminfo.mintick)))
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 7 — EXÉCUTION
+// ─────────────────────────────────────────────────────────────────────────
+
+if entry_long
+    lbl = (golden_l ? "⭐GOLDEN" : "✅B&R") + " LONG " + str.tostring(score_long) + "/4"
+    strategy.entry("SBS_L", strategy.long,  comment=lbl)
+    strategy.exit("XL", "SBS_L", stop=sl_long,  limit=tp2_long,  trail_price=tp1_long,  trail_offset=trail_tks)
+
+if entry_short
+    lbl_s = (golden_s ? "⭐GOLDEN" : "✅B&R") + " SHORT " + str.tostring(score_short) + "/4"
+    strategy.entry("SBS_S", strategy.short, comment=lbl_s)
+    strategy.exit("XS", "SBS_S", stop=sl_short, limit=tp2_short, trail_price=tp1_short, trail_offset=trail_tks)
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 7 — VISUALISATION
+// ─────────────────────────────────────────────────────────────────────────
+
+// Niveaux journaliers
+plot(i_show_lvls ? pdh  : na, "PDH",  color=color.new(color.red,    40), linewidth=1, style=plot.style_linebr)
+plot(i_show_lvls ? pdl  : na, "PDL",  color=color.new(color.lime,   40), linewidth=1, style=plot.style_linebr)
+plot(i_show_lvls ? pdc  : na, "PDC",  color=color.new(color.orange, 40), linewidth=1, style=plot.style_linebr)
+plot(i_show_lvls ? phow : na, "PHOW", color=color.new(color.red,    65), linewidth=1, style=plot.style_linebr, linestyle=plot.style_dotted)
+plot(i_show_lvls ? plow : na, "PLOW", color=color.new(color.lime,   65), linewidth=1, style=plot.style_linebr, linestyle=plot.style_dotted)
+
+// SMAs
+plot(i_show_sma ? sma_fast : na, "SMA 20",  color=color.new(color.blue,   20), linewidth=2)
+plot(i_show_sma ? sma_slow : na, "SMA 200", color=color.new(color.purple, 20), linewidth=2)
+
+// Fib zones
+plot(in_fib_long  ? fib_618_long  : na, "Fib 61.8 Long",  color=color.new(color.lime, 60), linewidth=1, style=plot.style_linebr)
+plot(in_fib_long  ? fib_786_long  : na, "Fib 78.6 Long",  color=color.new(color.lime, 70), linewidth=1, style=plot.style_linebr)
+plot(in_fib_short ? fib_618_short : na, "Fib 61.8 Short", color=color.new(color.red,  60), linewidth=1, style=plot.style_linebr)
+plot(in_fib_short ? fib_786_short : na, "Fib 78.6 Short", color=color.new(color.red,  70), linewidth=1, style=plot.style_linebr)
+
+// Signaux d'entrée
+plotshape(entry_long  and golden_l,  "⭐ GOLDEN LONG",  shape.star,         location.belowbar, color.new(color.yellow, 0), size=size.normal)
+plotshape(entry_long  and not golden_l,  "✅ LONG B&R",  shape.triangleup,   location.belowbar, color.new(color.lime, 0),   size=size.small)
+plotshape(entry_short and golden_s,  "⭐ GOLDEN SHORT", shape.star,         location.abovebar, color.new(color.yellow, 0), size=size.normal)
+plotshape(entry_short and not golden_s, "✅ SHORT B&R",  shape.triangledown, location.abovebar, color.new(color.red, 0),    size=size.small)
+
+// Fond coloré
+bgcolor(no_edge  ? color.new(color.gray,  92) : na, title="No Edge Zone")
+bgcolor(hcom     ? color.new(color.green, 97) : na, title="HCOM Day")
+bgcolor(lcom     ? color.new(color.red,   97) : na, title="LCOM Day")
+
+// Niveaux SL/TP (position active)
+float sl_viz  = strategy.position_size > 0 ? sl_long  : strategy.position_size < 0 ? sl_short  : na
+float tp1_viz = strategy.position_size > 0 ? tp1_long : strategy.position_size < 0 ? tp1_short : na
+float tp2_viz = strategy.position_size > 0 ? tp2_long : strategy.position_size < 0 ? tp2_short : na
+
+plot(i_draw_levels ? sl_viz  : na, "SL Actif",  color=color.new(color.red,   20), linewidth=2, style=plot.style_linebr)
+plot(i_draw_levels ? tp1_viz : na, "TP1 Actif", color=color.new(color.lime,  40), linewidth=1, style=plot.style_linebr)
+plot(i_draw_levels ? tp2_viz : na, "TP2 Actif", color=color.new(color.lime,  20), linewidth=2, style=plot.style_linebr)
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 7 — DASHBOARD TABLE
+// ─────────────────────────────────────────────────────────────────────────
+
+var table dash = table.new(position.top_right, 3, 12, bgcolor=color.new(#0d1117, 5), border_width=1, border_color=color.new(color.gray, 60))
+
+if barstate.islast and i_show_dash
+    // Header
+    table.cell(dash, 0, 0,  "🏛️ STOIC LENS",        bgcolor=color.new(#1a237e, 0), text_color=color.white,          text_size=size.small)
+    table.cell(dash, 1, 0,  syminfo.ticker,            bgcolor=color.new(#1a237e, 0), text_color=color.new(#ffd700,0), text_size=size.small)
+    table.cell(dash, 2, 0,  timeframe.period,          bgcolor=color.new(#1a237e, 0), text_color=color.white,          text_size=size.small)
+
+    // HCOM/LCOM
+    string mom_txt = hcom ? "HCOM 🟢" : lcom ? "LCOM 🔴" : "DOJI ⚪"
+    color  mom_col = hcom ? color.lime : lcom ? color.red : color.gray
+    table.cell(dash, 0, 1,  "MOMENTUM",    text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 1,  mom_txt,       text_color=mom_col,    text_size=size.small)
+    table.cell(dash, 2, 1,  "",            text_size=size.tiny)
+
+    // PDH/PDL/PDC
+    table.cell(dash, 0, 2, "PDH",  text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 2, str.tostring(pdh, "#.#####"), text_color=color.red,    text_size=size.small)
+    table.cell(dash, 2, 2, near_pdh ? "◀ NEAR" : "", text_color=color.yellow, text_size=size.tiny)
+
+    table.cell(dash, 0, 3, "PDC",  text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 3, str.tostring(pdc, "#.#####"), text_color=color.orange, text_size=size.small)
+    table.cell(dash, 2, 3, near_pdc ? "◀ NEAR" : "", text_color=color.yellow, text_size=size.tiny)
+
+    table.cell(dash, 0, 4, "PDL",  text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 4, str.tostring(pdl, "#.#####"), text_color=color.lime,   text_size=size.small)
+    table.cell(dash, 2, 4, near_pdl ? "◀ NEAR" : "", text_color=color.yellow, text_size=size.tiny)
+
+    // SMA Bias
+    string sma_txt = sma_bull ? "BULL 🟢" : "BEAR 🔴"
+    string d_txt   = d_bull   ? "HTF 🟢"  : "HTF 🔴"
+    table.cell(dash, 0, 5, "SMA BIAS",   text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 5, sma_txt,      text_color=sma_bull ? color.lime : color.red, text_size=size.small)
+    table.cell(dash, 2, 5, d_txt,        text_color=d_bull   ? color.lime : color.red, text_size=size.tiny)
+
+    // Scores
+    string lscr = str.tostring(score_long)  + "/4" + (golden_l ? " ⭐" : "")
+    string sscr = str.tostring(score_short) + "/4" + (golden_s ? " ⭐" : "")
+    table.cell(dash, 0, 6, "SCORE 🟢",   text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 6, lscr,         text_color=score_long  >= i_min_score ? color.lime : color.gray, text_size=size.small)
+    table.cell(dash, 2, 6, score_long  >= i_min_score ? "✅ VALID" : "—", text_color=color.yellow, text_size=size.tiny)
+
+    table.cell(dash, 0, 7, "SCORE 🔴",   text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 7, sscr,         text_color=score_short >= i_min_score ? color.red  : color.gray, text_size=size.small)
+    table.cell(dash, 2, 7, score_short >= i_min_score ? "✅ VALID" : "—", text_color=color.yellow, text_size=size.tiny)
+
+    // Edge Zone
+    string edge_txt = no_edge ? "❌ NO EDGE" : "✅ EDGE OK"
+    color  edge_col = no_edge ? color.red    : color.lime
+    table.cell(dash, 0, 8,  "ZONE",       text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 8,  edge_txt,     text_color=edge_col,   text_size=size.small)
+    table.cell(dash, 2, 8,  "",           text_size=size.tiny)
+
+    // ATR
+    string atr_pct = str.tostring(atr14 / close * 100, "#.##") + "%"
+    table.cell(dash, 0, 9,  "ATR 14",     text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 9,  str.tostring(atr14, "#.#####"), text_color=color.white, text_size=size.small)
+    table.cell(dash, 2, 9,  atr_pct,      text_color=color.white, text_size=size.tiny)
+
+    // RR actuel
+    float rr_val = strategy.position_size != 0 ? (strategy.openprofit / (i_risk_pct / 100 * strategy.equity + 0.01)) : 0
+    string rr_txt = strategy.position_size != 0 ? "R: " + str.tostring(rr_val, "#.##") : "Flat"
+    table.cell(dash, 0, 10, "POS / RR",   text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 10, rr_txt,       text_color=rr_val >= 0 ? color.lime : color.red, text_size=size.small)
+    table.cell(dash, 2, 10, "",           text_size=size.tiny)
+
+    // Win rate
+    int total_t = strategy.closedtrades
+    int wins    = strategy.wintrades
+    float wr    = total_t > 0 ? wins / total_t * 100 : 0
+    table.cell(dash, 0, 11, "WR / Trades", text_color=color.gray, text_size=size.tiny)
+    table.cell(dash, 1, 11, str.tostring(wr, "#.#") + "% | " + str.tostring(total_t), text_color=wr >= 55 ? color.lime : color.red, text_size=size.small)
+    table.cell(dash, 2, 11, "",            text_size=size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUCHE 7 — ALERTES JSON WEBHOOK (compatibles broker + agent système)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Template JSON — utilisé par le système multi-agents Python
+string j_long = '{"action":"BUY",'
+     + '"symbol":"' + syminfo.ticker + '",'
+     + '"exchange":"' + syminfo.prefix + '",'
+     + '"tf":"' + timeframe.period + '",'
+     + '"setup":"' + (golden_l ? "GOLDEN_SBS" : "B&R_STANDARD") + '",'
+     + '"score":' + str.tostring(score_long) + ','
+     + '"momentum":"HCOM",'
+     + '"entry":' + str.tostring(close) + ','
+     + '"sl":' + str.tostring(sl_long) + ','
+     + '"tp1":' + str.tostring(tp1_long) + ','
+     + '"tp2":' + str.tostring(tp2_long) + ','
+     + '"risk_pct":' + str.tostring(i_risk_pct) + ','
+     + '"rr_tp1":' + str.tostring(i_rr_tp1) + ','
+     + '"rr_tp2":' + str.tostring(i_rr_tp2) + ','
+     + '"pdh":' + str.tostring(pdh) + ','
+     + '"pdl":' + str.tostring(pdl) + ','
+     + '"pdc":' + str.tostring(pdc) + ','
+     + '"atr":' + str.tostring(atr14) + ','
+     + '"sma_bias":"' + (sma_bull ? "BULL" : "BEAR") + '",'
+     + '"d_bias":"' + (d_bull ? "BULL" : "BEAR") + '",'
+     + '"timestamp":"{{time}}"}'
+
+string j_short = '{"action":"SELL",'
+     + '"symbol":"' + syminfo.ticker + '",'
+     + '"exchange":"' + syminfo.prefix + '",'
+     + '"tf":"' + timeframe.period + '",'
+     + '"setup":"' + (golden_s ? "GOLDEN_SBS" : "B&R_STANDARD") + '",'
+     + '"score":' + str.tostring(score_short) + ','
+     + '"momentum":"LCOM",'
+     + '"entry":' + str.tostring(close) + ','
+     + '"sl":' + str.tostring(sl_short) + ','
+     + '"tp1":' + str.tostring(tp1_short) + ','
+     + '"tp2":' + str.tostring(tp2_short) + ','
+     + '"risk_pct":' + str.tostring(i_risk_pct) + ','
+     + '"rr_tp1":' + str.tostring(i_rr_tp1) + ','
+     + '"rr_tp2":' + str.tostring(i_rr_tp2) + ','
+     + '"pdh":' + str.tostring(pdh) + ','
+     + '"pdl":' + str.tostring(pdl) + ','
+     + '"pdc":' + str.tostring(pdc) + ','
+     + '"atr":' + str.tostring(atr14) + ','
+     + '"sma_bias":"' + (sma_bear ? "BEAR" : "BULL") + '",'
+     + '"d_bias":"' + (d_bear ? "BEAR" : "BULL") + '",'
+     + '"timestamp":"{{time}}"}'
+
+if entry_long  and i_webhook
+    alert(j_long,  alert.freq_once_per_bar_close)
+
+if entry_short and i_webhook
+    alert(j_short, alert.freq_once_per_bar_close)

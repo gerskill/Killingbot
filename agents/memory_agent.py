@@ -4,8 +4,12 @@ Rôle : assistant de contexte. Reçoit résultats → classe → suggère suivan
 """
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import validation
 
 VAULT = Path(__file__).parent.parent / "vault"
 MEMORY_FILE = VAULT / "memory.json"
@@ -42,6 +46,16 @@ class MemoryAgent:
 
     def receive_result(self, strategy_name: str, params: dict, metrics: dict):
         """Reçoit un résultat de l'Explorateur, met à jour la mémoire."""
+        # Deflated Sharpe : corrige le biais de sélection (on a déjà testé N
+        # variantes avant celle-ci, le meilleur des N gagne un peu par hasard).
+        # Calculé sur l'historique AVANT d'ajouter l'entrée courante.
+        prior_sharpes = [r["metrics"].get("sharpe_ratio", 0) for r in self.memory["results"]]
+        trial_sharpes = prior_sharpes + [metrics.get("sharpe_ratio", 0)]
+        n_obs = max(metrics.get("total_trades", 1), 2)
+        dsr = validation.deflated_sharpe_ratio(metrics.get("sharpe_ratio", 0), trial_sharpes, n_obs)
+        if dsr is not None:
+            metrics["deflated_sharpe"] = dsr
+
         entry = {
             "name": strategy_name,
             "params": params,
@@ -54,11 +68,18 @@ class MemoryAgent:
         monthly = metrics.get("monthly_return_pct", 0)
         wr = metrics.get("win_rate_pct", 0)
         trades = metrics.get("total_trades", 0)
+        oos_degr = metrics.get("oos_degradation_pct")
 
         status = "🎯 TARGET" if monthly >= 10 else ("✅" if monthly >= 5 else ("⚠️" if monthly >= 0 else "❌"))
+        flags = []
+        if oos_degr is not None and oos_degr < -50:
+            flags.append(f"⚠️ OOS s'effondre ({oos_degr:+.0f}%)")
+        if dsr is not None and dsr < 0.95:
+            flags.append(f"⚠️ deflated_sharpe bas ({dsr:.2f} < 0.95)")
+        flag_str = " " + " ".join(flags) if flags else ""
         self._log(
             f"**{self.name}** → reçu `{strategy_name}` "
-            f"| {status} {monthly:.1f}%/mois | WR {wr:.0f}% | {trades} trades"
+            f"| {status} {monthly:.1f}%/mois | WR {wr:.0f}% | {trades} trades{flag_str}"
         )
 
         # Mise à jour du best
@@ -139,6 +160,24 @@ class MemoryAgent:
 
         return suggestions
 
+    def suggest_next_llm(self, n: int = 3) -> list[dict]:
+        """
+        Génération créative via Claude (option A) — complète suggest_next().
+        Contrairement aux règles if/else fixes, propose des combinaisons de
+        params jamais codées à l'avance. Retourne [] si pas de clé API ou erreur,
+        jamais d'exception qui casse la boucle.
+        """
+        from llm_generator import generate_variations
+
+        top = self.get_best(5)
+        if not top:
+            return []
+
+        variations = generate_variations(top, self.memory["explored"], n=n)
+        for v in variations:
+            self._log(f"**{self.name}** → 🧠 LLM suggestion `{v.get('_name_hint', '?')}` — {v.get('_reason', '')}")
+        return variations
+
     def already_explored(self, name: str) -> bool:
         return name in self.memory["explored"]
 
@@ -148,30 +187,55 @@ class MemoryAgent:
         lines = [
             "# 🏆 Meilleures Stratégies KB\n",
             f"_Mise à jour : {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n",
-            "| Rang | Stratégie | %/mois | WR | Trades | Drawdown | Sharpe |",
-            "|------|-----------|--------|-----|--------|----------|--------|",
+            "_%/mois = in-sample. OOS = perf out-of-sample (jamais utilisée pour classer). "
+            "DSR = deflated Sharpe (probabilité que ce ne soit pas juste le meilleur tirage parmi les essais faits ; <0.95 = pas fiable)._\n",
+            "| Rang | Stratégie | %/mois IS | OOS | Dégr. OOS | WR | Trades | Drawdown | Sharpe | DSR |",
+            "|------|-----------|-----------|-----|-----------|-----|--------|----------|--------|-----|",
         ]
         for i, r in enumerate(best, 1):
             m = r["metrics"]
             target = " 🎯" if m.get("monthly_return_pct", 0) >= 10 else ""
+            oos = m.get("oos_monthly_return_pct")
+            degr = m.get("oos_degradation_pct")
+            dsr = m.get("deflated_sharpe")
+            oos_str = f"{oos:.1f}%" if oos is not None else "N/A"
+            degr_str = f"{degr:+.0f}%" if degr is not None else "N/A"
+            dsr_str = f"{dsr:.2f}" if dsr is not None else "N/A"
+            warn = ""
+            if degr is not None and degr < -50:
+                warn += "⚠️"
+            if dsr is not None and dsr < 0.95:
+                warn += "⚠️"
             lines.append(
-                f"| {i} | [[{r['name']}]]{target} "
+                f"| {i} | [[{r['name']}]]{target}{warn} "
                 f"| {m.get('monthly_return_pct', 0):.1f}% "
+                f"| {oos_str} "
+                f"| {degr_str} "
                 f"| {m.get('win_rate_pct', 0):.0f}% "
                 f"| {m.get('total_trades', 0)} "
                 f"| {m.get('max_drawdown_pct', 0):.1f}% "
-                f"| {m.get('sharpe_ratio', 0):.2f} |"
+                f"| {m.get('sharpe_ratio', 0):.2f} "
+                f"| {dsr_str} |"
             )
         lines.append("\n## Détail")
         for r in best:
             m = r["metrics"]
+            oos = m.get("oos_monthly_return_pct")
+            degr = m.get("oos_degradation_pct")
+            dsr = m.get("deflated_sharpe")
+            oos_line = f"- **Retour mensuel (OOS)** : {oos:.2f}% (dégradation {degr:+.0f}%)" \
+                if oos is not None and degr is not None else "- **OOS** : N/A"
+            sharpe_line = f"- **Sharpe** : {m.get('sharpe_ratio', 0):.2f} (deflated: {dsr:.2f})" \
+                if dsr is not None else f"- **Sharpe** : {m.get('sharpe_ratio', 0):.2f}"
+
             lines.append(
                 f"\n### [[{r['name']}]]\n"
-                f"- **Retour mensuel** : {m.get('monthly_return_pct', 0):.2f}%\n"
+                f"- **Retour mensuel (IS)** : {m.get('monthly_return_pct', 0):.2f}%\n"
+                f"{oos_line}\n"
                 f"- **Win Rate** : {m.get('win_rate_pct', 0):.1f}%\n"
                 f"- **Trades** : {m.get('total_trades', 0)}\n"
                 f"- **Drawdown max** : {m.get('max_drawdown_pct', 0):.1f}%\n"
-                f"- **Sharpe** : {m.get('sharpe_ratio', 0):.2f}\n"
+                f"{sharpe_line}\n"
                 f"- **Paramètres** : `{json.dumps({k: v for k, v in r['params'].items() if not k.startswith('_')})}`\n"
             )
         with open(VAULT / "BEST_STRATEGIES.md", "w") as f:

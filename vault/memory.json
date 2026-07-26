@@ -4378,5 +4378,103 @@
     "KB_1h",
     "KB_ULTRA"
   ],
-  "session": 0
+  "session": 0,
+  "loop_history": [
+    {
+      "iteration": 1,
+      "ts": "2026-07-11T19:30:00",
+      "agent": "performance_rule_update_agent",
+      "guardrails": {
+        "max_leverage": 5,
+        "max_drawdown_pct": 20,
+        "stop_trading_if_dd_exceeds_pct": 18,
+        "max_position_size": "1_month_capital_flow",
+        "max_params_changed_per_iteration": 2,
+        "note": "Anti-overfitting: jamais plus de 2 params par iteration (multiple testing bias)"
+      },
+      "ranking": [
+        {
+          "rank": 1,
+          "name": "KB_15m",
+          "sharpe": 7.57,
+          "dd_pct": 5.7,
+          "monthly_ret_pct": 7.9,
+          "status": "DEPLOY_CANDIDATE",
+          "reason": "Meilleur risk-adjusted, DD le plus bas, peu optimise = robuste"
+        },
+        {
+          "rank": 2,
+          "name": "KB_LOOSE_RR2.5_RR3.0",
+          "sharpe": 7.06,
+          "dd_pct": 12.2,
+          "monthly_ret_pct": 8.0,
+          "status": "VALID_BACKUP",
+          "reason": "Meilleur retour mensuel, DD acceptable"
+        },
+        {
+          "rank": 3,
+          "name": "pp_st_btc_4h_final",
+          "sharpe": 5.8,
+          "dd_pct": 24.53,
+          "monthly_ret_pct": 10.5,
+          "status": "GUARDRAIL_VIOLATION",
+          "reason": "DD 24.53% > limite 20%. Fix requis avant deploy."
+        }
+      ],
+      "rules_updates": [
+        {
+          "strategy": "pp_st_btc_4h_final",
+          "param": "adx_min",
+          "old": 20,
+          "new": 25,
+          "justification": "Filtre trends faibles, DD estime -4 a -6 pts",
+          "status": "PENDING_WALKFORWARD"
+        },
+        {
+          "strategy": "pp_st_btc_4h_final",
+          "param": "st_factor",
+          "old": 5.0,
+          "new": 3.5,
+          "justification": "Stops plus serres, worst trade -450 -> ~-250",
+          "status": "PENDING_WALKFORWARD"
+        }
+      ],
+      "actions_taken": [
+        "kb_15m_strategy.pine cree et injecte dans TradingView via MCP (compile OK)",
+        "Backtest generique ema_cross 20/50 1h sur BTC-USD: -55% -> confirme que crossover simple SANS filtres Kijun/ATR perd. Filtres KB_15m obligatoires."
+      ],
+      "lessons": [
+        "Multiple testing = ennemi de l'alpha (35 variants deja testes, STOP en creer). Garder 2 max.",
+        "Backtest seul ne suffit pas: walk-forward + paper trading obligatoires avant live.",
+        "EMA cross nu = -55% sur 1 an. L'edge vient des filtres (Kijun + ATR range + cooldown), pas du crossover.",
+        "Fixed TP mauvais sur BTC 4H, exit sur reversal PP-ST meilleur (regle existante confirmee)."
+      ],
+      "next_actions": [
+        {
+          "priority": 1,
+          "action": "Backtest KB_15m dans TradingView Strategy Tester (BTC/USDT 15m, 2024-2026) pour valider vs chiffres vault"
+        },
+        {
+          "priority": 2,
+          "action": "Walk-forward pp_st_btc_4h_final avec adx_min=25, st_factor=3.5. Promote si DD<20% et Sharpe>6.5"
+        },
+        {
+          "priority": 3,
+          "action": "Paper trading KB_15m 1 semaine via webhook avant IBKR live"
+        },
+        {
+          "priority": 4,
+          "action": "Brancher journal_agent -> ce fichier (loop_history) pour auto-append chaque iteration"
+        }
+      ],
+      "deploy_state": {
+        "live": [],
+        "paper": [],
+        "pending_validation": [
+          "KB_15m",
+          "pp_st_btc_4h_final_FIXED"
+        ]
+      }
+    }
+  ]
 }

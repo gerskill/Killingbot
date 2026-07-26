@@ -1,0 +1,18 @@
+{
+  "symbol": "OANDA:XAUUSD",
+  "tf": "4H",
+  "period": "2013-01-01 → 2026-06-05",
+  "results": {
+    "netProfitPct": 5.09,
+    "maxDrawdownPct": 2.60,
+    "profitFactor": 1.891,
+    "totalTrades": 7,
+    "winningTrades": 3,
+    "losingTrades": 4,
+    "winRate": 42.86,
+    "expectancyUSD": 72.68,
+    "sharpe": -0.241
+  },
+  "notes": "Très peu de trades (7 sur 13 ans). PF 1.89 et DD 2.6% suggèrent que les rares signaux sont propres, mais échantillon trop faible. Probable que le strategy tester limite à ~10k bougies (et 13 ans 4H = 28k bougies) donc seul un sous-ensemble testé. Augmenter la fenêtre ou tester en Daily.",
+  "ts": "2026-06-07"
+}

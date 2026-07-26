@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Killingbot — Carte d'architecture</title>
+<style>
+:root{
+  --bg:#0d0f0e; --panel:#141816; --panel2:#1a1f1c; --line:#252b27;
+  --txt:#e6e8e4; --dim:#8a9188; --accent:#b0c080; --accent2:#6f8f3f;
+  --warn:#d9a441; --bad:#c0603a; --good:#7fa650;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;padding:32px 24px 80px;max-width:1180px;margin:0 auto}
+h1{font-size:26px;font-weight:650;letter-spacing:-.02em}
+h2{font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin:38px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;font-weight:600;margin:0 0 6px}
+.sub{color:var(--dim);font-size:13px;margin-top:5px}
+.hero{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:20px 22px;margin-bottom:6px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:16px}
+.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:11px 13px}
+.kpi b{display:block;font-size:21px;font-weight:650;letter-spacing:-.02em}
+.kpi span{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:14px 0}
+.node{flex:1 1 165px;min-width:155px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 14px;position:relative}
+.node .tag{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:5px}
+.node code{font-size:11.5px;color:var(--accent);background:none;display:block;margin-top:3px;word-break:break-all}
+.arrow{align-self:center;color:var(--accent2);font-size:17px;flex:0 0 auto}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:4px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+.pill{display:inline-block;font-size:10.5px;font-weight:650;padding:2.5px 8px;border-radius:20px;letter-spacing:.03em;white-space:nowrap}
+.p-ok{background:rgba(127,166,80,.16);color:var(--good);border:1px solid rgba(127,166,80,.32)}
+.p-warn{background:rgba(217,164,65,.14);color:var(--warn);border:1px solid rgba(217,164,65,.3)}
+.p-bad{background:rgba(192,96,58,.14);color:var(--bad);border:1px solid rgba(192,96,58,.3)}
+.p-dim{background:rgba(138,145,136,.12);color:var(--dim);border:1px solid rgba(138,145,136,.25)}
+.num{font-variant-numeric:tabular-nums}
+.pos{color:var(--good)} .neg{color:var(--bad)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:15px 17px;margin-bottom:9px}
+.card.hi{border-left:3px solid var(--bad)}
+.card.mid{border-left:3px solid var(--warn)}
+.card.lo{border-left:3px solid var(--line)}
+.card p{color:var(--dim);font-size:13px;margin-top:5px}
+.rules li{margin:7px 0;color:var(--dim);font-size:13.5px;padding-left:2px}
+.rules{padding-left:19px}
+.rules strong{color:var(--txt);font-weight:600}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+@media(max-width:760px){.two{grid-template-columns:1fr}.flow{flex-direction:column}.arrow{transform:rotate(90deg);align-self:flex-start;margin-left:20px}}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>Killingbot — carte d'architecture</h1>
+  <div class="sub">Généré le 26 juillet 2026 · TradingView → webhook Python → paper trading · boucle de recherche agents</div>
+  <div class="kpis">
+    <div class="kpi"><b>1</b><span>strat confirmée live</span></div>
+    <div class="kpi"><b>18</b><span>scripts Pine</span></div>
+    <div class="kpi"><b>31</b><span>modules Python</span></div>
+    <div class="kpi"><b class="neg">130</b><span>fichiers non commités</span></div>
+    <div class="kpi"><b class="neg">0</b><span>walk-forward fait</span></div>
+  </div>
+</div>
+
+<h2>Flux principal — du signal à la position</h2>
+<div class="flow">
+  <div class="node"><span class="tag">1 · Signal</span>TradingView<code>pine_scripts/strategies/*.pine</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">2 · Ingest</span>FastAPI :5001<code>webhook_server_v2.py</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">3 · Filtres</span>régime + risque<code>sidecars/*.py</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">4 · Exécution</span>paper only<code>core/paper_executor.py</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">5 · UI</span>Next.js / Vercel<code>app/views/*.tsx</code></div>
+</div>
+<div class="flow">
+  <div class="node"><span class="tag">Boucle recherche</span>orchestrator<code>agents/orchestrator.py</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">Explore</span>génère + backteste<code>agents/strategy_explorer.py</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">Garde-fous</span>WF · DSR · Monte Carlo<code>agents/validation.py</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">Mémoire</span>classement<code>vault/BEST_STRATEGIES.md</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><span class="tag">Codegen</span>Jinja2 → Pine<code>sovereign/engine.py</code></div>
+</div>
+
+<h2>Stratégies — statut réel</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Fichier</th><th>Statut</th><th>Meilleur résultat vérifié</th><th>À retenir</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>pp_st_btc_4h_final.pine</code></td>
+  <td><span class="pill p-ok">CONFIRMÉE LIVE</span></td>
+  <td class="num pos">+2947 % · DD 24,5 % · PF 2,52<br><span class="sub">BTCUSDT 4H · 59 trades</span></td>
+  <td>Seule testée en direct dans le Strategy Tester. Référence du projet.</td>
+</tr>
+<tr>
+  <td><code>stoic_lens_pure_v2.pine</code></td>
+  <td><span class="pill p-ok">GÉNÉRALISE</span></td>
+  <td class="num pos">17/20 symboles positifs<br><span class="sub">Daily · aucun DD &gt; 8,8 %</span></td>
+  <td>Meilleure robustesse multi-marchés. Sweet spots : 15m et Daily. Garder les défauts — le tuning SPX casse BTC.</td>
+</tr>
+<tr>
+  <td><code>stoic_123_ribbon.pine</code></td>
+  <td><span class="pill p-ok">OK CRYPTO/INDICES</span></td>
+  <td class="num pos">BTC +18,1 % · SPX +21,1 %<br><span class="sub">8h · PF 1,28</span></td>
+  <td>Trend-following pur. <span class="neg">Forex cassé (−9,4 %)</span>, <span class="neg">actions intraday catastrophe (NVDA −43 %)</span>.</td>
+</tr>
+<tr>
+  <td><code>pp_st_btc_4h_v2_ls.pine</code></td>
+  <td><span class="pill p-warn">PARTIEL</span></td>
+  <td>SL dur : DD shorts 33 % → 23 %</td>
+  <td>V1 + shorts miroir. Défaut retenu : SL sur shorts seulement.</td>
+</tr>
+<tr>
+  <td><code>stoic_sbs.pine</code></td>
+  <td><span class="pill p-bad">REJETÉE</span></td>
+  <td class="num">+2,3 % au mieux (1h)</td>
+  <td>Séquence SBS mécanisée. Méthode discrétionnaire → perd son edge. Garder comme indicateur visuel.</td>
+</tr>
+<tr>
+  <td><code>kb_confluence_v1.pine</code></td>
+  <td><span class="pill p-bad">OVERFIT</span></td>
+  <td>BTC +65 % mais <span class="neg">ETH −3,4 %</span></td>
+  <td>Échec cross-asset. Ne pas déployer.</td>
+</tr>
+<tr>
+  <td><code>kb_15m_strategy.pine</code></td>
+  <td><span class="pill p-dim">SUPPRIMÉE</span></td>
+  <td class="neg">−8,76 % · PF 0,465</td>
+  <td>Annonçait +7,9 %/mois dans ses commentaires. Le live a dit non.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>Construit mais pas branché</h2>
+<div class="two">
+  <div class="card lo"><h3>agents/garch_position_sizer.py</h3><p>Sizing GARCH(1,1) avec repli EWMA. Testé sur données synthétiques uniquement. Jamais appelé depuis le webhook.</p></div>
+  <div class="card lo"><h3>agents/stoic_multi_agent_system.py</h3><p>Système 7 agents async (analyste, macro, validateur, risque, exécution, apprentissage). Nécessite clés broker + <code>ANTHROPIC_API_KEY</code>.</p></div>
+  <div class="card lo"><h3>agents/llm_generator.py</h3><p>Génération de variantes via Claude. Bloqué : <code>ANTHROPIC_API_KEY</code> commentée dans <code>.env</code>. La boucle tourne quand même sur les heuristiques.</p></div>
+  <div class="card lo"><h3>agents/validation.py</h3><p>Walk-forward + deflated Sharpe + Monte Carlo. <strong>Existe, corrigé, mais jamais lancé sur les stratégies Pine.</strong></p></div>
+</div>
+
+<h2>À faire — par priorité</h2>
+<div class="card hi">
+  <h3>G1 · Walk-forward sur les stratégies retenues</h3>
+  <p>Tous les résultats ci-dessus sont <strong>in-sample</strong>. Le module <code>agents/validation.py</code> est prêt et corrigé, mais n'a jamais tourné sur les stratégies Pine. Sans ça, aucun chiffre n'est fiable pour du réel.</p>
+</div>
+<div class="card hi">
+  <h3>G5 · 130 fichiers non commités</h3>
+  <p>Risque de perte pure. Faire le tri et committer — plusieurs stratégies testées aujourd'hui ne sont dans aucun commit.</p>
+</div>
+<div class="card mid">
+  <h3>G2 · Finir la grille ruban 40 symboles × 8 TF</h3>
+  <p>Crypto 8h fait (8/10 positifs). Restent actions, indices, forex sur tous les timeframes.</p>
+</div>
+<div class="card mid">
+  <h3>G6 · Opening Range New York</h3>
+  <p>Visible sur le chart live de @StoicTA, absent de toutes les stratégies. Pourrait sauver les bas timeframes (5m/15m actuellement négatifs).</p>
+</div>
+<div class="card mid">
+  <h3>G3 · Brancher le sizing GARCH</h3>
+  <p>Code prêt, testé sur synthétique. Un appel depuis <code>webhook_server_v2.py</code> suffit.</p>
+</div>
+<div class="card lo">
+  <h3>G4 · Clé API · G7 · Process fantôme port 5001</h3>
+  <p>Décommenter <code>ANTHROPIC_API_KEY</code> pour débloquer la génération LLM. Vérifier <code>lsof -i :5001</code> (PID 57999 jamais confirmé arrêté).</p>
+</div>
+
+<h2>Règles du projet</h2>
+<ul class="rules">
+  <li><strong>Aucun chiffre sans test live.</strong> Un commentaire dans un <code>.pine</code> peut mentir — <code>kb_15m</code> annonçait +7,9 %/mois, le live a donné PF 0,465.</li>
+  <li><strong>Jamais d'ordre réel automatique.</strong> Paper trading jusqu'à validation walk-forward.</li>
+  <li><strong>Un seul script attaché au chart.</strong> Empiler 3+ stratégies avec <code>request.security</code> déclenche « Internal server study error » — le testeur n'affiche plus rien.</li>
+  <li><strong>Actions : jamais en intraday.</strong> Les bougies 8h coupent les sessions → gaps overnight au milieu des barres.</li>
+</ul>
+
+<h2>Pièges connus (outillage)</h2>
+<ul class="rules">
+  <li><code>pine_set_source</code> écrit dans un buffer caché qui <strong>ne s'attache pas au chart</strong>. L'attache manuelle (Cmd+Enter) reste nécessaire.</li>
+  <li><code>batch_run</code> timeout au-delà de ~5 symboles — utiliser la boucle manuelle.</li>
+  <li>Coller du code avec le focus sur le <strong>champ titre</strong> remplace le nom du script, pas son contenu.</li>
+</ul>
+
+<footer>
+  Fichier compagnon pour agents : <code>docs/ARCHITECTURE.json</code> — à lire avant toute nouvelle feature.
+</footer>
+
+</body>
+</html>

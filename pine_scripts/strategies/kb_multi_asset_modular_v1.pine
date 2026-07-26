@@ -1,0 +1,247 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// KB Multi-Asset Modular v1 — Stratégie générique BTC/Forex/Indices/Commodities
+// ─────────────────────────────────────────────────────────────────────────────
+// Conçue indépendamment de pp_st_btc_4h_final.pine. Ne dépend d'aucun seuil
+// fixe calibré sur un actif : tous les filtres de régime utilisent des
+// percentile-ranks sur l'historique propre du symbole (ta.percentrank),
+// pour que le même script se comporte correctement sur BTC, EURUSD, XAUUSD,
+// SPX, etc. sans recalibration manuelle par marché.
+//
+// Architecture (ordre de flux obligatoire) :
+//   LAYER 1  Market Outlook   → bias MTF (EMA50/EMA200 sur TF supérieure)
+//   LAYER 2  Confluences      → RSI momentum + volume relatif (si dispo)
+//   LAYER 3  Structure        → midline Donchian (Kijun-like) N barres
+//   LAYER 4  Range & Robustesse → f_regime() : ADX%-rank + squeeze TTM (BB⊂KC)
+//                                  + confirmation largeur BB en percentile bas
+//   LAYER 5  Setup Quality    → f_score() : score 0-100, 4 piliers x25pts
+//   LAYER 6  Risk Management  → f_risk() : SL ATR, TP1/TP2 RR, sizing GARCH,
+//                                  trailing chandelier, time stop
+//   LAYER 7  Exécution/Dashboard/Alertes JSON
+//
+// Le multiplicateur GARCH (agents/garch_position_sizer.py) n'est pas lisible
+// depuis Pine (pas d'accès filesystem) : il est saisi manuellement via
+// l'input "GARCH Size Multiplier", à mettre à jour depuis garch_output.json
+// (ou automatisé plus tard via pine_set_source / webhook).
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("KB Multi-Asset Modular v1", overlay=true, shorttitle="KB-MultiAsset",
+     initial_capital=10000,
+     default_qty_type=strategy.cash,
+     default_qty_value=1000,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     slippage=1)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────────────────────────────────────
+htf              = input.timeframe("D",  "MTF Bias Timeframe",        group="Layer 1 — Market Outlook")
+
+rsi_len          = input.int(14,   "RSI Length",                     group="Layer 2 — Confluences")
+rsi_long_th      = input.int(55,   "RSI Seuil Long",                  group="Layer 2 — Confluences")
+rsi_short_th     = input.int(45,   "RSI Seuil Short",                 group="Layer 2 — Confluences")
+use_vol_filter   = input.bool(true, "Filtre volume relatif (actions/futures/crypto)", group="Layer 2 — Confluences")
+vol_rel_len      = input.int(20,   "Volume MA Length",                group="Layer 2 — Confluences")
+
+structure_len    = input.int(26,   "Structure Midline (Kijun-like)",  group="Layer 3 — Structure")
+
+bb_len           = input.int(20,   "BB Length",                       group="Layer 4 — Regime & Squeeze")
+bb_mult          = input.float(2.0,"BB Mult",                         group="Layer 4 — Regime & Squeeze")
+kc_len           = input.int(20,   "KC Length",                       group="Layer 4 — Regime & Squeeze")
+kc_mult          = input.float(1.5,"KC Mult",                         group="Layer 4 — Regime & Squeeze")
+adx_len          = input.int(14,   "ADX Length",                      group="Layer 4 — Regime & Squeeze")
+atr_len          = input.int(14,   "ATR Length",                      group="Layer 4 — Regime & Squeeze")
+pct_lookback     = input.int(200,  "Percentile Lookback (auto-adapt)",group="Layer 4 — Regime & Squeeze")
+adx_rank_min     = input.int(60,   "ADX %-rank min (trending)",       group="Layer 4 — Regime & Squeeze")
+bbwidth_rank_max = input.int(20,   "BB Width %-rank max (squeeze)",   group="Layer 4 — Regime & Squeeze")
+
+score_min        = input.int(60,   "Score minimum pour entrer (/100)",group="Layer 5 — Setup Quality")
+
+atr_mult_sl      = input.float(1.5,"ATR Mult (Stop Loss)",            group="Layer 6 — Risk Management")
+rr1              = input.float(1.5,"TP1 RR",                          group="Layer 6 — Risk Management")
+rr2              = input.float(3.0,"TP2 RR",                          group="Layer 6 — Risk Management")
+risk_pct         = input.float(1.0,"Risque % equity / trade",         group="Layer 6 — Risk Management")
+garch_mult       = input.float(1.0,"GARCH Size Multiplier (manuel)",  minval=0.1, maxval=3.0, group="Layer 6 — Risk Management")
+max_bars_trade   = input.int(60,   "Time Stop (barres max en position)", group="Layer 6 — Risk Management")
+chand_len        = input.int(22,   "Chandelier Length (trailing)",    group="Layer 6 — Risk Management")
+
+ema_fast_len     = input.int(7,    "EMA Fast (trigger)",              group="Trigger")
+ema_slow_len     = input.int(21,   "EMA Slow (trigger)",              group="Trigger")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 1 — MARKET OUTLOOK (bias MTF)
+// ─────────────────────────────────────────────────────────────────────────────
+[htf_close, htf_ema200] = request.security(syminfo.tickerid, htf, [close, ta.ema(close, 200)], lookahead=barmerge.lookahead_off)
+int bias_mtf = htf_close > htf_ema200 ? 1 : htf_close < htf_ema200 ? -1 : 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 2 — CONFLUENCES (momentum + volume)
+// ─────────────────────────────────────────────────────────────────────────────
+float rsi_val      = ta.rsi(close, rsi_len)
+bool  momentum_long  = rsi_val > rsi_long_th
+bool  momentum_short = rsi_val < rsi_short_th
+
+float vol_ma        = ta.sma(volume, vol_rel_len)
+bool  vol_ok        = not use_vol_filter or volume >= vol_ma
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 3 — STRUCTURE & LIQUIDITÉ (midline type Kijun)
+// ─────────────────────────────────────────────────────────────────────────────
+float structure_high = ta.highest(high, structure_len)
+float structure_low  = ta.lowest(low, structure_len)
+float structure_mid  = (structure_high + structure_low) / 2
+bool  structure_long  = close > structure_mid
+bool  structure_short = close < structure_mid
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 4 — FILTRE RANGE & ROBUSTESSE : f_regime()
+// Squeeze robuste = TTM (Bollinger inside Keltner) CONFIRMÉ par percentile-rank
+// de la largeur BB — deux méthodes combinées plutôt qu'une largeur BB brute,
+// pour éviter les faux "squeeze" sur des actifs à volatilité structurellement
+// différente (l'or n'a pas la même largeur BB en points que l'EUR/USD).
+// ─────────────────────────────────────────────────────────────────────────────
+f_regime(bbLen, bbMult, kcLen, kcMult, adxLen, atrLen, pctLen, adxRankMin, bbwRankMax) =>
+    float basis    = ta.sma(close, bbLen)
+    float dev      = bbMult * ta.stdev(close, bbLen)
+    float bb_upper = basis + dev
+    float bb_lower = basis - dev
+    float bb_width = (bb_upper - bb_lower) / basis * 100
+
+    float kc_ma    = ta.ema(close, kcLen)
+    float kc_range = ta.atr(kcLen) * kcMult
+    float kc_upper = kc_ma + kc_range
+    float kc_lower = kc_ma - kc_range
+
+    bool  squeeze_ttm    = bb_lower > kc_lower and bb_upper < kc_upper
+    float bbwidth_rank   = ta.percentrank(bb_width, pctLen)
+    bool  squeeze_final  = squeeze_ttm and bbwidth_rank <= bbwRankMax
+
+    [_, _, adx_val] = ta.dmi(adxLen, adxLen)
+    float atr_pct      = ta.atr(atrLen) / close * 100
+    float adx_rank     = ta.percentrank(adx_val, pctLen)
+    float atr_rank     = ta.percentrank(atr_pct, pctLen)
+    bool  is_trending  = adx_rank >= adxRankMin and atr_rank >= 20 and not squeeze_final
+
+    string regime_label = squeeze_final ? "SQUEEZE" : is_trending ? "TREND" : "RANGE"
+    [is_trending, squeeze_final, adx_rank, atr_rank, regime_label]
+
+[is_trending, squeeze_on, adx_rank, atr_rank, regime_label] = f_regime(bb_len, bb_mult, kc_len, kc_mult, adx_len, atr_len, pct_lookback, adx_rank_min, bbwidth_rank_max)
+
+// Compteur de durée du squeeze (heuristique : plus le squeeze est long, plus la
+// sortie potentielle est ample — utilisé uniquement en info dashboard ici)
+var int squeeze_bars = 0
+squeeze_bars := squeeze_on ? squeeze_bars + 1 : 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 5 — QUALITÉ DU SETUP : f_score() (4 piliers x 25 pts)
+// ─────────────────────────────────────────────────────────────────────────────
+f_score(biasOk, momentumOk, structureOk, trendOk) =>
+    float score = 0.0
+    score := score + (biasOk ? 25.0 : 0.0)
+    score := score + (momentumOk ? 25.0 : 0.0)
+    score := score + (structureOk ? 25.0 : 0.0)
+    score := score + (trendOk ? 25.0 : 0.0)
+    score
+
+float score_long  = f_score(bias_mtf == 1,  momentum_long  and vol_ok, structure_long,  is_trending)
+float score_short = f_score(bias_mtf == -1, momentum_short and vol_ok, structure_short, is_trending)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TRIGGER (croisement EMA — signal d'exécution, filtré ensuite par le score)
+// ─────────────────────────────────────────────────────────────────────────────
+float ema_fast = ta.ema(close, ema_fast_len)
+float ema_slow = ta.ema(close, ema_slow_len)
+bool  long_trigger  = ta.crossover(ema_fast, ema_slow)
+bool  short_trigger = ta.crossunder(ema_fast, ema_slow)
+
+bool long_entry  = long_trigger  and not squeeze_on and score_long  >= score_min and strategy.position_size == 0
+bool short_entry = short_trigger and not squeeze_on and score_short >= score_min and strategy.position_size == 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 6 — RISK MANAGEMENT : f_risk()
+// ─────────────────────────────────────────────────────────────────────────────
+f_risk(atrVal, atrMultSl, rrTp1, rrTp2, equity, riskPct, volMult) =>
+    float sl_dist   = atrVal * atrMultSl
+    float tp1_dist  = sl_dist * rrTp1
+    float tp2_dist  = sl_dist * rrTp2
+    float risk_amt  = equity * (riskPct / 100.0)
+    float base_qty  = sl_dist > 0 ? risk_amt / sl_dist : 0.0
+    float qty       = base_qty * volMult
+    [sl_dist, tp1_dist, tp2_dist, qty]
+
+float atr_val = ta.atr(atr_len)
+[sl_dist, tp1_dist, tp2_dist, qty] = f_risk(atr_val, atr_mult_sl, rr1, rr2, strategy.equity, risk_pct, garch_mult)
+
+// ── Entrées
+if long_entry
+    float sl = close - sl_dist
+    float tp1 = close + tp1_dist
+    float tp2 = close + tp2_dist
+    strategy.entry("Long", strategy.long, qty=qty,
+         alert_message='{"setup":"MULTI","dir":"LONG","ticker":"{{ticker}}","price":{{close}},"tf":"{{interval}}","score":' + str.tostring(score_long, "#") + ',"regime":"' + regime_label + '"}')
+    strategy.exit("TP1-L", "Long", stop=sl, limit=tp1, qty_percent=50)
+    strategy.exit("TP2-L", "Long", stop=sl, limit=tp2, qty_percent=50)
+
+if short_entry
+    float sl = close + sl_dist
+    float tp1 = close - tp1_dist
+    float tp2 = close - tp2_dist
+    strategy.entry("Short", strategy.short, qty=qty,
+         alert_message='{"setup":"MULTI","dir":"SHORT","ticker":"{{ticker}}","price":{{close}},"tf":"{{interval}}","score":' + str.tostring(score_short, "#") + ',"regime":"' + regime_label + '"}')
+    strategy.exit("TP1-S", "Short", stop=sl, limit=tp1, qty_percent=50)
+    strategy.exit("TP2-S", "Short", stop=sl, limit=tp2, qty_percent=50)
+
+// ── Trailing Chandelier (ratchet — ne se resserre jamais dans le mauvais sens)
+float chand_high = ta.highest(high, chand_len)
+float chand_low  = ta.lowest(low, chand_len)
+var float chand_stop_long  = na
+var float chand_stop_short = na
+
+if strategy.position_size > 0
+    float candidate_long = chand_high - atr_val * atr_mult_sl
+    chand_stop_long := na(chand_stop_long) ? candidate_long : math.max(chand_stop_long, candidate_long)
+else
+    chand_stop_long := na
+
+if strategy.position_size < 0
+    float candidate_short = chand_low + atr_val * atr_mult_sl
+    chand_stop_short := na(chand_stop_short) ? candidate_short : math.min(chand_stop_short, candidate_short)
+else
+    chand_stop_short := na
+
+if strategy.position_size > 0 and not na(chand_stop_long)
+    strategy.exit("Chandelier-L", "Long", stop=chand_stop_long)
+if strategy.position_size < 0 and not na(chand_stop_short)
+    strategy.exit("Chandelier-S", "Short", stop=chand_stop_short)
+
+// ── Time Stop
+var int bars_in_trade = 0
+bars_in_trade := strategy.position_size != 0 ? bars_in_trade + 1 : 0
+if bars_in_trade > max_bars_trade and strategy.position_size != 0
+    strategy.close_all(comment="TimeStop")
+    bars_in_trade := 0
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 7 — VISUALISATION & DASHBOARD
+// ─────────────────────────────────────────────────────────────────────────────
+plot(ema_fast, "EMA Fast", color=color.new(color.blue, 0))
+plot(ema_slow, "EMA Slow", color=color.new(color.orange, 0))
+plot(structure_mid, "Structure Mid", color=color.new(color.purple, 0))
+bgcolor(squeeze_on ? color.new(color.yellow, 85) : na, title="Squeeze Zone")
+
+var table dash = table.new(position.top_right, 2, 7, border_width=1)
+if barstate.islast
+    table.cell(dash, 0, 0, "Bias MTF",   text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 0, bias_mtf == 1 ? "LONG" : bias_mtf == -1 ? "SHORT" : "NEUTRE", text_color=bias_mtf == 1 ? color.lime : bias_mtf == -1 ? color.red : color.gray, bgcolor=color.new(color.black,0))
+    table.cell(dash, 0, 1, "Régime",     text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 1, regime_label, text_color=squeeze_on ? color.yellow : color.aqua, bgcolor=color.new(color.black,0))
+    table.cell(dash, 0, 2, "ADX %-rank", text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 2, str.tostring(adx_rank, "#.#"), text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 0, 3, "Score Long", text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 3, str.tostring(score_long, "#"), text_color=score_long >= score_min ? color.lime : color.gray, bgcolor=color.new(color.black,0))
+    table.cell(dash, 0, 4, "Score Short",text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 4, str.tostring(score_short, "#"), text_color=score_short >= score_min ? color.red : color.gray, bgcolor=color.new(color.black,0))
+    table.cell(dash, 0, 5, "GARCH Mult", text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 5, str.tostring(garch_mult, "#.##") + "x", text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 0, 6, "Bars/Trade", text_color=color.white, bgcolor=color.new(color.black,0))
+    table.cell(dash, 1, 6, str.tostring(bars_in_trade) + "/" + str.tostring(max_bars_trade), text_color=color.white, bgcolor=color.new(color.black,0))

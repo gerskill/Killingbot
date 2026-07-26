@@ -1,0 +1,284 @@
+//@version=6
+// =============================================================================
+//  STOIC CONFLUENCE INDICATOR — Killingbot
+//  Source: Stoic Trader Protocol (@StoicTA) — adapté Killingbot
+//  Version 1.0 — 2026-06-07
+//
+//  PHILOSOPHIE :
+//    Execution > Prediction. Consolidation → Expansion.
+//    No Edge Zone = No Trade. Trapped Trader Logic.
+//
+//  RÔLE :
+//    Indicateur (pas une stratégie auto). Affiche :
+//      - Niveaux HCOM/LCOM mensuels (Tier 1)
+//      - PDH/PDL/PDC (Tier 2)
+//      - SMA 20/200 (Tier 4 — bias session)
+//      - Score 4 piliers temps réel (P1-P4)
+//      - Dashboard professionnel
+//      - Alertes JSON webhook compatibles
+//
+//  ORDRE DU FLUX (CLAUDE.md) :
+//    C1 Market Outlook | C2 Confluences | C3 Structure & Liquidité
+//    C4 Filtre Range  | C5 Qualité Setup | C6 Risk Mgmt | C7 Exec & Alertes
+// =============================================================================
+
+indicator(
+     title       = "Stoic Confluence [Killingbot]",
+     shorttitle  = "STOIC",
+     overlay     = true,
+     max_lines_count   = 100,
+     max_labels_count  = 100,
+     max_boxes_count   = 50)
+
+// =============================================================================
+//  INPUTS — organisés par groupes logiques
+// =============================================================================
+
+// ── COUCHE 1 : HTF Context ──────────────────────────────────────────────────
+gHTF = "1. Higher Time Frame Context"
+show_hcom   = input.bool(true,  "Afficher HCOM/LCOM mensuels", group=gHTF)
+hcom_color  = input.color(color.new(#ef4444, 0), "Couleur HCOM (résistance)", group=gHTF)
+lcom_color  = input.color(color.new(#22c55e, 0), "Couleur LCOM (support)",    group=gHTF)
+
+// ── COUCHE 3 : Daily Levels ─────────────────────────────────────────────────
+gDAY = "2. Daily Levels (PDH/PDL/PDC)"
+show_daily  = input.bool(true,  "Afficher PDH/PDL/PDC", group=gDAY)
+pdh_color   = input.color(color.new(#f59e0b, 20), "Couleur PDH", group=gDAY)
+pdl_color   = input.color(color.new(#0ea5e9, 20), "Couleur PDL", group=gDAY)
+pdc_color   = input.color(color.new(#a855f7, 30), "Couleur PDC", group=gDAY)
+
+// ── COUCHE 2 : Session Bias (SMA) ───────────────────────────────────────────
+gSMA = "3. Session Bias — SMA 20/200"
+show_sma    = input.bool(true, "Afficher SMA 20 & 200", group=gSMA)
+sma_fast    = input.int(20,  "SMA Fast",  minval=2, group=gSMA)
+sma_slow    = input.int(200, "SMA Slow",  minval=10, group=gSMA)
+sma_fast_color = input.color(color.new(#3b82f6, 0), "Couleur SMA Fast", group=gSMA)
+sma_slow_color = input.color(color.new(#f97316, 0), "Couleur SMA Slow", group=gSMA)
+
+// ── COUCHE 5 : Scoring 4 piliers ────────────────────────────────────────────
+gSCORE = "4. Scoring 4 Piliers"
+atr_len     = input.int(14,    "ATR Length", minval=1,   group=gSCORE)
+atr_mult_p3 = input.float(0.5, "P3 — Distance max au niveau daily (×ATR)", minval=0.1, step=0.1, group=gSCORE)
+fib_low     = input.float(0.5, "P4 — Borne basse retracement Fib", minval=0.3, maxval=0.7, step=0.01, group=gSCORE)
+fib_high    = input.float(0.618, "P4 — Borne haute retracement Fib", minval=0.5, maxval=0.8, step=0.001, group=gSCORE)
+
+// ── COUCHE 7 : Dashboard & Alertes ──────────────────────────────────────────
+gDASH = "5. Dashboard & Alertes"
+show_dash    = input.bool(true, "Afficher Dashboard", group=gDASH)
+dash_pos     = input.string("top_right", "Position", options=["top_left","top_right","bottom_left","bottom_right","middle_right"], group=gDASH)
+dash_size    = input.string("normal", "Taille",    options=["tiny","small","normal","large"], group=gDASH)
+alert_min_score = input.int(3, "Score min pour alerte (1-4)", minval=1, maxval=4, group=gDASH)
+
+// =============================================================================
+//  COUCHE 1 — HCOM / LCOM (Monthly High/Low CLOSE)
+//  HCOM = highest daily CLOSE of current month
+//  LCOM = lowest  daily CLOSE of current month
+//  ⚠️ CLOSE pas wick — close = acceptance réelle
+// =============================================================================
+
+// Récupération des closes daily du mois en cours via request.security
+// On utilise un timeframe Daily et on track le close mensuel
+[d_close, d_high, d_low] = request.security(syminfo.tickerid, "D", [close[1], high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+// Tracking mensuel — reset au changement de mois
+var float hcom = na
+var float lcom = na
+new_month = ta.change(month(time)) != 0
+
+if new_month
+    hcom := d_close
+    lcom := d_close
+else
+    hcom := na(hcom) ? d_close : (d_close > hcom ? d_close : hcom)
+    lcom := na(lcom) ? d_close : (d_close < lcom ? d_close : lcom)
+
+// =============================================================================
+//  COUCHE 3 — PDH / PDL / PDC (Previous Day High/Low/Close)
+// =============================================================================
+
+pdh = d_high
+pdl = d_low
+pdc = d_close
+
+// =============================================================================
+//  COUCHE 2 — SMA 20 & 200 (bias session, ici sur le TF courant)
+// =============================================================================
+
+sma20  = ta.sma(close, sma_fast)
+sma200 = ta.sma(close, sma_slow)
+
+// =============================================================================
+//  COUCHE 4 — ATR pour le filtre de distance
+// =============================================================================
+
+atr = ta.atr(atr_len)
+
+// =============================================================================
+//  COUCHE 5 — SCORING 4 PILIERS (Long & Short séparés)
+// =============================================================================
+
+// P1 — Monthly Extreme proximity
+// Long  : prix near LCOM (within ATR×1.0)
+// Short : prix near HCOM (within ATR×1.0)
+p1_long  = not na(lcom) and math.abs(close - lcom) <= atr * 1.0
+p1_short = not na(hcom) and math.abs(close - hcom) <= atr * 1.0
+
+// P2 — SMA Bias
+// Long  : SMA20 > SMA200 ET prix > SMA20
+// Short : SMA20 < SMA200 ET prix < SMA20
+p2_long  = sma20 > sma200 and close > sma20
+p2_short = sma20 < sma200 and close < sma20
+
+// P3 — Daily Level proximity (within ATR × P3 multiplier)
+// Long  : prix near PDL
+// Short : prix near PDH
+p3_long  = math.abs(close - pdl) <= atr * atr_mult_p3
+p3_short = math.abs(close - pdh) <= atr * atr_mult_p3
+
+// P4 — Fib Zone (retracement 50-61.8% du dernier swing)
+// On utilise un proxy simple : retracement par rapport au range PDH/PDL
+day_range = pdh - pdl
+fib_long_low   = pdl + day_range * fib_low
+fib_long_high  = pdl + day_range * fib_high
+fib_short_low  = pdh - day_range * fib_high
+fib_short_high = pdh - day_range * fib_low
+
+p4_long  = close >= fib_long_low  and close <= fib_long_high
+p4_short = close >= fib_short_low and close <= fib_short_high
+
+// Conversion bool → int pour scoring
+score_long  = (p1_long  ? 1 : 0) + (p2_long  ? 1 : 0) + (p3_long  ? 1 : 0) + (p4_long  ? 1 : 0)
+score_short = (p1_short ? 1 : 0) + (p2_short ? 1 : 0) + (p3_short ? 1 : 0) + (p4_short ? 1 : 0)
+
+// Direction dominante
+best_score = math.max(score_long, score_short)
+best_dir   = score_long > score_short ? "LONG" : score_short > score_long ? "SHORT" : "NEUTRE"
+
+// Label setup selon score
+setup_label = best_score >= 4 ? "GOLDEN SBS ⭐⭐⭐" : best_score == 3 ? "B&R Standard ⭐⭐" : best_score == 2 ? "Low Priority ⭐" : "NO EDGE ❌"
+setup_color = best_score >= 4 ? color.new(#fbbf24, 0) : best_score == 3 ? color.new(#22c55e, 0) : best_score == 2 ? color.new(#94a3b8, 0) : color.new(#64748b, 0)
+
+// =============================================================================
+//  COUCHE 7 — VISUALISATION : Plots & Levels
+// =============================================================================
+
+// SMA plots
+plot(show_sma ? sma20  : na, "SMA 20",  color=sma_fast_color, linewidth=2)
+plot(show_sma ? sma200 : na, "SMA 200", color=sma_slow_color, linewidth=2)
+
+// HCOM/LCOM — lignes horizontales projetées
+plot(show_hcom ? hcom : na, "HCOM", color=hcom_color, linewidth=2, style=plot.style_linebr)
+plot(show_hcom ? lcom : na, "LCOM", color=lcom_color, linewidth=2, style=plot.style_linebr)
+
+// PDH/PDL/PDC
+plot(show_daily ? pdh : na, "PDH", color=pdh_color, linewidth=1, style=plot.style_linebr)
+plot(show_daily ? pdl : na, "PDL", color=pdl_color, linewidth=1, style=plot.style_linebr)
+plot(show_daily ? pdc : na, "PDC", color=pdc_color, linewidth=1, style=plot.style_circles)
+
+// =============================================================================
+//  DASHBOARD — table pro avec scoring temps réel
+// =============================================================================
+
+// Conversion position string → enum
+dash_position = dash_pos == "top_left" ? position.top_left : dash_pos == "top_right" ? position.top_right : dash_pos == "bottom_left" ? position.bottom_left : dash_pos == "bottom_right" ? position.bottom_right : position.middle_right
+dash_text_size = dash_size == "tiny" ? size.tiny : dash_size == "small" ? size.small : dash_size == "large" ? size.large : size.normal
+
+var table dash = table.new(dash_position, columns=3, rows=12, bgcolor=color.new(#0f172a, 10), border_width=1, border_color=color.new(#334155, 50))
+
+if show_dash and barstate.islast
+    table.clear(dash, 0, 0, 2, 11)
+
+    // Header
+    table.cell(dash, 0, 0, "👑 STOIC LENS", text_color=color.white, bgcolor=color.new(#1e293b, 0), text_size=dash_text_size)
+    table.cell(dash, 1, 0, syminfo.ticker, text_color=color.new(#94a3b8, 0), bgcolor=color.new(#1e293b, 0), text_size=dash_text_size)
+    table.cell(dash, 2, 0, timeframe.period, text_color=color.new(#94a3b8, 0), bgcolor=color.new(#1e293b, 0), text_size=dash_text_size)
+
+    // Section Niveaux
+    table.cell(dash, 0, 1, "Niveau", text_color=color.new(#cbd5e1, 0), bgcolor=color.new(#1e293b, 30), text_size=dash_text_size)
+    table.cell(dash, 1, 1, "Prix",   text_color=color.new(#cbd5e1, 0), bgcolor=color.new(#1e293b, 30), text_size=dash_text_size)
+    table.cell(dash, 2, 1, "Δ ATR",  text_color=color.new(#cbd5e1, 0), bgcolor=color.new(#1e293b, 30), text_size=dash_text_size)
+
+    table.cell(dash, 0, 2, "HCOM",  text_color=hcom_color, text_size=dash_text_size)
+    table.cell(dash, 1, 2, str.tostring(hcom, format.mintick), text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 2, str.tostring((close - hcom) / atr, "0.00"), text_color=color.new(#94a3b8, 0), text_size=dash_text_size)
+
+    table.cell(dash, 0, 3, "LCOM",  text_color=lcom_color, text_size=dash_text_size)
+    table.cell(dash, 1, 3, str.tostring(lcom, format.mintick), text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 3, str.tostring((close - lcom) / atr, "0.00"), text_color=color.new(#94a3b8, 0), text_size=dash_text_size)
+
+    table.cell(dash, 0, 4, "PDH",   text_color=pdh_color, text_size=dash_text_size)
+    table.cell(dash, 1, 4, str.tostring(pdh, format.mintick), text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 4, str.tostring((close - pdh) / atr, "0.00"), text_color=color.new(#94a3b8, 0), text_size=dash_text_size)
+
+    table.cell(dash, 0, 5, "PDL",   text_color=pdl_color, text_size=dash_text_size)
+    table.cell(dash, 1, 5, str.tostring(pdl, format.mintick), text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 5, str.tostring((close - pdl) / atr, "0.00"), text_color=color.new(#94a3b8, 0), text_size=dash_text_size)
+
+    // Section Scoring
+    table.cell(dash, 0, 6, "Pilier", text_color=color.new(#cbd5e1, 0), bgcolor=color.new(#1e293b, 30), text_size=dash_text_size)
+    table.cell(dash, 1, 6, "LONG",   text_color=color.new(#22c55e, 0), bgcolor=color.new(#1e293b, 30), text_size=dash_text_size)
+    table.cell(dash, 2, 6, "SHORT",  text_color=color.new(#ef4444, 0), bgcolor=color.new(#1e293b, 30), text_size=dash_text_size)
+
+    table.cell(dash, 0, 7, "P1 Monthly", text_color=color.new(#cbd5e1, 0), text_size=dash_text_size)
+    table.cell(dash, 1, 7, p1_long  ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 7, p1_short ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+
+    table.cell(dash, 0, 8, "P2 SMA",     text_color=color.new(#cbd5e1, 0), text_size=dash_text_size)
+    table.cell(dash, 1, 8, p2_long  ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 8, p2_short ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+
+    table.cell(dash, 0, 9, "P3 Daily",   text_color=color.new(#cbd5e1, 0), text_size=dash_text_size)
+    table.cell(dash, 1, 9, p3_long  ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 9, p3_short ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+
+    table.cell(dash, 0, 10, "P4 Fib",    text_color=color.new(#cbd5e1, 0), text_size=dash_text_size)
+    table.cell(dash, 1, 10, p4_long  ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+    table.cell(dash, 2, 10, p4_short ? "✅" : "❌", text_color=color.white, text_size=dash_text_size)
+
+    // Verdict
+    table.cell(dash, 0, 11, "VERDICT", text_color=color.white, bgcolor=color.new(#0f172a, 0), text_size=dash_text_size)
+    table.cell(dash, 1, 11, best_dir + " " + str.tostring(best_score) + "/4", text_color=color.white, bgcolor=setup_color, text_size=dash_text_size)
+    table.cell(dash, 2, 11, setup_label, text_color=color.white, bgcolor=setup_color, text_size=dash_text_size)
+
+// =============================================================================
+//  ALERTES JSON WEBHOOK — compatible Killingbot artifact dashboard
+// =============================================================================
+
+alert_trigger_long  = score_long  >= alert_min_score and ta.change(score_long)  != 0
+alert_trigger_short = score_short >= alert_min_score and ta.change(score_short) != 0
+
+// JSON payload aligné avec la structure de l'artifact (voir stoic_dashboard.html)
+json_payload(direction, score) =>
+    '{"source":"stoic_confluence","symbol":"' + syminfo.ticker +
+     '","tf":"' + timeframe.period +
+     '","direction":"' + direction +
+     '","score":' + str.tostring(score) +
+     ',"setup":"' + setup_label +
+     '","price":' + str.tostring(close, format.mintick) +
+     ',"hcom":' + str.tostring(hcom, format.mintick) +
+     ',"lcom":' + str.tostring(lcom, format.mintick) +
+     ',"pdh":' + str.tostring(pdh, format.mintick) +
+     ',"pdl":' + str.tostring(pdl, format.mintick) +
+     ',"pdc":' + str.tostring(pdc, format.mintick) +
+     ',"atr":' + str.tostring(atr, format.mintick) +
+     ',"p1":' + (direction == "LONG" ? str.tostring(p1_long) : str.tostring(p1_short)) +
+     ',"p2":' + (direction == "LONG" ? str.tostring(p2_long) : str.tostring(p2_short)) +
+     ',"p3":' + (direction == "LONG" ? str.tostring(p3_long) : str.tostring(p3_short)) +
+     ',"p4":' + (direction == "LONG" ? str.tostring(p4_long) : str.tostring(p4_short)) +
+     ',"ts":' + str.tostring(time) + '}'
+
+if alert_trigger_long
+    alert(json_payload("LONG", score_long), alert.freq_once_per_bar_close)
+
+if alert_trigger_short
+    alert(json_payload("SHORT", score_short), alert.freq_once_per_bar_close)
+
+// Background highlight quand score >= 3
+bgcolor(score_long  >= 3 ? color.new(#22c55e, 92) : na, title="Long Setup Highlight")
+bgcolor(score_short >= 3 ? color.new(#ef4444, 92) : na, title="Short Setup Highlight")
+
+// Labels visuels sur les signaux forts
+plotshape(alert_trigger_long  and score_long  >= 4, title="GOLDEN LONG",  location=location.belowbar, style=shape.triangleup,   color=color.new(#fbbf24, 0), size=size.normal, text="GS")
+plotshape(alert_trigger_short and score_short >= 4, title="GOLDEN SHORT", location=location.abovebar, style=shape.triangledown, color=color.new(#fbbf24, 0), size=size.normal, text="GS")
+plotshape(alert_trigger_long  and score_long  == 3, title="B&R LONG",     location=location.belowbar, style=shape.triangleup,   color=color.new(#22c55e, 0), size=size.small,  text="B&R")
+plotshape(alert_trigger_short and score_short == 3, title="B&R SHORT",    location=location.abovebar, style=shape.triangledown, color=color.new(#ef4444, 0), size=size.small,  text="B&R")

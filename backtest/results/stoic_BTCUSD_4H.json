@@ -1,0 +1,38 @@
+{
+  "symbol": "COINBASE:BTCUSD",
+  "tf": "4H",
+  "period": "2017-01-01 → 2026-06-07",
+  "strategy": "stoic_confluence_strategy.pine",
+  "params": {
+    "min_score": 3,
+    "atr_mult_stop": 1.5,
+    "rr_ratio": 2.0,
+    "cooldown_bars": 5,
+    "risk_pct": 1.0,
+    "commission": 0.05,
+    "slippage": 2
+  },
+  "results": {
+    "netProfitPct": 48.93,
+    "netProfitUSD": 4892.78,
+    "maxDrawdownPct": 8.48,
+    "maxDrawdownUSD": 1379.40,
+    "profitFactor": 2.768,
+    "totalTrades": 44,
+    "winningTrades": 23,
+    "losingTrades": 21,
+    "winRate": 52.27,
+    "avgPnLPct": 1.96,
+    "avgWinPct": 5.78,
+    "avgLossPct": -2.32,
+    "largestWinUSD": 1264.04,
+    "largestLossUSD": 404.08,
+    "expectancyUSD": 111.20,
+    "sharpe": 0.128,
+    "CAGR": 4.31,
+    "avgBarsInTrade": 25
+  },
+  "notes": "Premier backtest live de la strat Stoic. PF 2.77 et DD 8.48% = très propre, edge confirmé. Comparé à pp_st_btc_4h_final.pine (baseline +2947%/DD 24.53%), Stoic est moins explosif mais 3x plus prudent. Sharpe faible (0.128) car peu de trades.",
+  "screenshot": "backtest/screenshots/stoic_st_btc_4h_stats.png",
+  "ts": "2026-06-07"
+}

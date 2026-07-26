@@ -53,3 +53,24 @@ __pycache__/
 
 # Scanner cache
 scanner/__pycache__/
+.gstack/
+.venv/
+cookbooks/.venv/
+
+# Verrous du paper executor (fcntl.flock) — locaux, jamais versionnes
+*.lock
+vault/*.lock
+
+# ── Ajouts 2026-07-26 ──
+# Repo Anthropic cookbook cloné (nested git repo)
+cookbooks/
+# Média lourd (533MB) et frames extraites
+*.mp4
+frames/
+# Base du graphe code-review (régénérable)
+.code-review-graph/
+# Sorties d'outils régénérables
+garch_output.json
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,22 @@
+{
+  "symbol": "COINBASE:BTCUSD",
+  "tf": "1D",
+  "period": "2014-12-01 → 2026-06-07",
+  "results": {
+    "netProfitPct": 30.30,
+    "netProfitUSD": 3029.84,
+    "maxDrawdownPct": 11.43,
+    "profitFactor": 1.286,
+    "totalTrades": 114,
+    "winningTrades": 48,
+    "losingTrades": 66,
+    "winRate": 42.11,
+    "avgWinPct": 10.30,
+    "avgLossPct": -7.23,
+    "expectancyUSD": 21.04,
+    "sharpe": 0.029,
+    "avgBarsInTrade": 19
+  },
+  "notes": "BTC Daily moins bon que 4H : PF 1.29 (vs 2.77), WR 42% (vs 52%). Logique : Stoic protocole conçu pour HTF context + setup intraday, le Daily devient trop \"context\" sans entrée actionable.",
+  "ts": "2026-06-07"
+}

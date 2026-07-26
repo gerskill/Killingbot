@@ -1,0 +1,255 @@
+// ══════════════════════════════════════════════════════════════════════════
+// KILLINGBOT — VIBE-CODE MULTI-SIGNAL STRATEGY [v1.0]
+// Inspiré de la cheatsheet Miles Deutscher (@milesdeutscher / @aiedge_)
+// ──────────────────────────────────────────────────────────────────────────
+// 4 modules intégrés :
+//   1. DIVERGENCE DETECTOR   — Prix LL + RSI HL (RSI < 50)
+//   2. MULTI-SIGNAL ENTRY    — RSI < 40 + EMA200 + Volume 1.5x
+//   3. LIQUIDATION ZONES     — HH/LL 20 bougies (support/résistance)
+//   4. BTC DOMINANCE SIGNAL  — Rotation BTC.D → alts
+// ──────────────────────────────────────────────────────────────────────────
+// Ordre du flux : Outlook → Confluences → Structure → Range → Score → Risk → Exec
+// ══════════════════════════════════════════════════════════════════════════
+//@version=6
+strategy("Killingbot — Vibe-Code Multi-Signal [v1.0]",
+         overlay          = true,
+         initial_capital  = 10000,
+         default_qty_type = strategy.percent_of_equity,
+         default_qty_value= 10,
+         commission_type  = strategy.commission.percent,
+         commission_value = 0.05,
+         slippage         = 2,
+         calc_on_every_tick = false)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 1 — MARKET OUTLOOK (EMA Trend + BTC Dominance)
+// ══════════════════════════════════════════════════════════════════════════
+
+grp1 = "━━ COUCHE 1 — Market Outlook ━━"
+ema_len   = input.int(200, "EMA Trend Length",   minval=50,  maxval=500, group=grp1)
+use_btcd  = input.bool(true, "Activer filtre BTC.D",         group=grp1)
+btcd_tf   = input.timeframe("D", "BTC.D Timeframe",          group=grp1)
+btcd_ema_len = input.int(20, "BTC.D EMA Length", minval=5,   group=grp1)
+
+ema200     = ta.ema(close, ema_len)
+bull_trend = close > ema200
+bear_trend = close < ema200
+
+// BTC Dominance — rotation alts
+btcd       = request.security("CRYPTOCAP:BTC.D", btcd_tf, close)
+btcd_ema   = request.security("CRYPTOCAP:BTC.D", btcd_tf, ta.ema(close, btcd_ema_len))
+btcd_bear  = btcd < btcd_ema  // BTC.D baisse = favorable aux alts (longs)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 2 — CONFLUENCES (RSI + Volume + Divergence Haussière)
+// ══════════════════════════════════════════════════════════════════════════
+
+grp2 = "━━ COUCHE 2 — Confluences ━━"
+rsi_len      = input.int(14,  "RSI Length",           minval=2, maxval=50,  group=grp2)
+rsi_os       = input.int(40,  "RSI Oversold (<)",     minval=10, maxval=50, group=grp2)
+rsi_ob       = input.int(60,  "RSI Overbought (>)",   minval=50, maxval=90, group=grp2)
+vol_mult     = input.float(1.5,"Volume Multiplier",   minval=1.0, maxval=5.0, step=0.1, group=grp2)
+vol_ma_len   = input.int(20,  "Volume MA Length",     minval=5, maxval=100, group=grp2)
+use_div      = input.bool(true,"Activer Divergence",               group=grp2)
+div_lb       = input.int(5,   "Divergence Lookback",  minval=2, maxval=20,  group=grp2)
+
+rsi         = ta.rsi(close, rsi_len)
+vol_avg     = ta.sma(volume, vol_ma_len)
+vol_surge   = volume > vol_avg * vol_mult
+
+// Module 1 — DIVERGENCE DETECTOR
+// Prix fait un nouveau plus bas, mais RSI fait un plus haut → divergence haussière
+price_new_ll = low < ta.lowest(low[1], div_lb)
+rsi_higher   = rsi > ta.lowest(rsi[1], div_lb)
+bull_div     = use_div and price_new_ll and rsi_higher and rsi < 50
+
+// Module 2 — MULTI-SIGNAL ENTRY (condition de base de la cheatsheet)
+// Toutes les 3 conditions requises : RSI < 40 + Prix > EMA200 + Volume surge
+multi_signal_long = rsi < rsi_os and bull_trend and vol_surge
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 3 — STRUCTURE & LIQUIDITÉ (Liquidation Zones)
+// ══════════════════════════════════════════════════════════════════════════
+
+grp3 = "━━ COUCHE 3 — Structure & Liquidité ━━"
+liq_len    = input.int(20, "Liquidation Zone Lookback", minval=5,  maxval=200, group=grp3)
+show_liq   = input.bool(true, "Afficher Zones Liquidation",                    group=grp3)
+
+// Module 3 — LIQUIDATION ZONES (HH/LL des N dernières bougies)
+liq_high   = ta.highest(high[1], liq_len)  // Résistance (liq haute)
+liq_low    = ta.lowest(low[1],   liq_len)  // Support    (liq basse)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 4 — FILTRE RANGE & ROBUSTESSE (ADX)
+// ══════════════════════════════════════════════════════════════════════════
+
+grp4 = "━━ COUCHE 4 — Filtre Range ━━"
+adx_len    = input.int(14, "ADX Length",       minval=5,  maxval=50,  group=grp4)
+adx_min    = input.int(20, "ADX Min (trend)",  minval=10, maxval=50,  group=grp4)
+use_adx    = input.bool(true,"Activer filtre ADX",                    group=grp4)
+
+[_, _, adx_val] = ta.dmi(adx_len, adx_len)
+in_trend   = not use_adx or adx_val >= adx_min
+
+// Cooldown — éviter les signaux trop rapprochés
+cooldown   = input.int(3, "Cooldown (barres)", minval=0, maxval=20, group=grp4)
+var int    last_signal_bar = na
+cooldown_ok = na(last_signal_bar) or (bar_index - last_signal_bar) >= cooldown
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 5 — QUALITÉ DU SETUP (Scoring 0-5)
+// ══════════════════════════════════════════════════════════════════════════
+
+grp5 = "━━ COUCHE 5 — Qualité Setup ━━"
+min_score  = input.int(3, "Score minimum (1-5)", minval=1, maxval=5, group=grp5)
+
+// Score LONG — chaque condition = 1 point
+score_long = (bull_trend ? 1 : 0) + (rsi < rsi_os ? 1 : 0) + (vol_surge ? 1 : 0) + (bull_div ? 1 : 0) + ((use_btcd and btcd_bear) ? 1 : 0)
+
+// Score SHORT — conditions inverses
+score_short = (bear_trend ? 1 : 0) + (rsi > rsi_ob ? 1 : 0) + (vol_surge ? 1 : 0) + (not bull_div ? 1 : 0) + ((use_btcd and not btcd_bear) ? 1 : 0)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 6 — RISK MANAGEMENT (SL/TP dynamique)
+// ══════════════════════════════════════════════════════════════════════════
+
+grp6 = "━━ COUCHE 6 — Risk Management ━━"
+atr_len    = input.int(14,  "ATR Length",        minval=1, maxval=50,          group=grp6)
+sl_atr     = input.float(1.5,"SL ATR Mult",      minval=0.5, maxval=5.0, step=0.1, group=grp6)
+tp_rr      = input.float(2.0,"TP Risk/Reward",   minval=1.0, maxval=10.0,step=0.1, group=grp6)
+use_liq_sl = input.bool(true,"SL sur Liq. Zone", group=grp6)
+
+atr = ta.atr(atr_len)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌COUCHE 7 — EXÉCUTION, VISUALISATION & ALERTES
+// ══════════════════════════════════════════════════════════════════════════
+
+grp7 = "━━ COUCHE 7 — Exécution & Affichage ━━"
+show_labels = input.bool(true, "Labels score",         group=grp7)
+show_div    = input.bool(true, "Labels divergence",    group=grp7)
+show_dash   = input.bool(true, "Dashboard",            group=grp7)
+
+// ── Conditions d'entrée finales ──────────────────────────────────────────
+// LONG : score suffisant + tendance + cooldown + pas déjà en position
+long_entry  = score_long  >= min_score and in_trend and cooldown_ok and strategy.position_size == 0
+// SHORT : score suffisant + tendance + cooldown + pas déjà en position
+short_entry = score_short >= min_score and in_trend and cooldown_ok and strategy.position_size == 0
+
+// ── Calcul SL/TP ─────────────────────────────────────────────────────────
+// SL long : ATR ou sous liq_low (le plus bas des deux)
+sl_long_price  = use_liq_sl ? math.min(liq_low,  close - atr * sl_atr) : close - atr * sl_atr
+tp_long_price  = close + (close - sl_long_price) * tp_rr
+
+// SL short : ATR ou au-dessus de liq_high (le plus haut des deux)
+sl_short_price = use_liq_sl ? math.max(liq_high, close + atr * sl_atr) : close + atr * sl_atr
+tp_short_price = close - (sl_short_price - close) * tp_rr
+
+// ── Entrées et sorties ────────────────────────────────────────────────────
+if long_entry
+    strategy.entry("LONG", strategy.long)
+    strategy.exit("LONG_SL_TP", from_entry="LONG", stop=sl_long_price, limit=tp_long_price)
+    last_signal_bar := bar_index
+
+if short_entry
+    strategy.entry("SHORT", strategy.short)
+    strategy.exit("SHORT_SL_TP", from_entry="SHORT", stop=sl_short_price, limit=tp_short_price)
+    last_signal_bar := bar_index
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌VISUALISATION
+// ══════════════════════════════════════════════════════════════════════════
+
+// EMA 200
+ema_col = bull_trend ? color.new(color.teal, 0) : color.new(color.orange, 0)
+plot(ema200, "EMA 200", color=ema_col, linewidth=2)
+
+// Liquidation Zones
+liq_high_col = color.new(color.red,   show_liq ? 70 : 100)
+liq_low_col  = color.new(color.lime,  show_liq ? 70 : 100)
+plot(liq_high, "LIQ HIGH", color=liq_high_col, linewidth=1, style=plot.style_stepline)
+plot(liq_low,  "LIQ LOW",  color=liq_low_col,  linewidth=1, style=plot.style_stepline)
+
+// Signaux entry
+plotshape(long_entry,  "LONG SIGNAL",  shape.labelup,   location.belowbar, color.new(color.lime,  0), text="▲ LONG",  textcolor=color.black, size=size.normal)
+plotshape(short_entry, "SHORT SIGNAL", shape.labeldown, location.abovebar, color.new(color.red,   0), text="▼ SHORT", textcolor=color.white, size=size.normal)
+
+// Divergence haussière (sans signal d'entrée)
+plotshape(show_div and bull_div and not long_entry, "BULL DIV", shape.circle, location.belowbar, color.new(color.yellow, 30), size=size.tiny)
+
+// Labels score au signal
+if show_labels and (long_entry or short_entry)
+    lbl_txt = long_entry ? "LONG " + str.tostring(score_long) + "/5" : "SHORT " + str.tostring(score_short) + "/5"
+    lbl_col = long_entry ? color.new(color.lime, 20) : color.new(color.red, 20)
+    lbl_y   = long_entry ? low - atr * 0.5 : high + atr * 0.5
+    lbl_style = long_entry ? label.style_label_up : label.style_label_down
+    label.new(bar_index, lbl_y, lbl_txt, color=lbl_col, textcolor=color.black, style=lbl_style, size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌DASHBOARD PROFESSIONNEL
+// ══════════════════════════════════════════════════════════════════════════
+
+if show_dash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 10,
+         bgcolor       = color.new(color.black, 75),
+         border_color  = color.new(color.gray, 50),
+         border_width  = 1,
+         frame_color   = color.new(color.blue, 30),
+         frame_width   = 1)
+
+    // Header
+    table.cell(dash, 0, 0, "🤖 KILLINGBOT",     text_color=color.yellow, bgcolor=color.new(color.navy, 50), text_size=size.small)
+    table.cell(dash, 1, 0, "VIBE-CODE v1.0",    text_color=color.yellow, bgcolor=color.new(color.navy, 50), text_size=size.small)
+
+    // Market Outlook
+    trend_txt = bull_trend ? "🟢 BULL" : "🔴 BEAR"
+    trend_col = bull_trend ? color.lime : color.red
+    table.cell(dash, 0, 1, "EMA 200",    text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 1, trend_txt,    text_color=trend_col,    text_size=size.tiny)
+
+    btcd_txt = btcd_bear ? "🟢 ALT SEASON" : "🔴 BTC DOM"
+    btcd_col = btcd_bear ? color.lime : color.orange
+    table.cell(dash, 0, 2, "BTC.D",      text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 2, use_btcd ? btcd_txt : "Désactivé", text_color=btcd_col, text_size=size.tiny)
+
+    // Confluences
+    rsi_col = rsi < rsi_os ? color.lime : rsi > rsi_ob ? color.red : color.white
+    table.cell(dash, 0, 3, "RSI",        text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 3, str.tostring(math.round(rsi, 1)), text_color=rsi_col, text_size=size.tiny)
+
+    vol_txt = vol_surge ? "🟢 SURGE x" + str.tostring(math.round(volume / vol_avg, 1)) : "⚪ Normal"
+    table.cell(dash, 0, 4, "Volume",     text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 4, vol_txt,      text_color=vol_surge ? color.lime : color.gray, text_size=size.tiny)
+
+    div_txt = bull_div ? "🟡 BULL DIV" : "–"
+    table.cell(dash, 0, 5, "Divergence", text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 5, div_txt,      text_color=bull_div ? color.yellow : color.gray, text_size=size.tiny)
+
+    // ADX
+    adx_col = adx_val >= adx_min ? color.lime : color.orange
+    table.cell(dash, 0, 6, "ADX",        text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 6, str.tostring(math.round(adx_val, 1)) + (in_trend ? " ✅" : " ⚠️"), text_color=adx_col, text_size=size.tiny)
+
+    // Scores
+    sl_col = score_long  >= min_score ? color.lime : color.gray
+    ss_col = score_short >= min_score ? color.red  : color.gray
+    table.cell(dash, 0, 7, "Score LONG",  text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 7, "★ " + str.tostring(score_long)  + "/5", text_color=sl_col, text_size=size.tiny)
+    table.cell(dash, 0, 8, "Score SHORT", text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 8, "★ " + str.tostring(score_short) + "/5", text_color=ss_col, text_size=size.tiny)
+
+    // Signal actif
+    pos_txt = strategy.position_size > 0 ? "🟢 LONG" : strategy.position_size < 0 ? "🔴 SHORT" : "⚪ FLAT"
+    pos_col = strategy.position_size > 0 ? color.lime : strategy.position_size < 0 ? color.red : color.gray
+    table.cell(dash, 0, 9, "Position",   text_color=color.silver, text_size=size.tiny)
+    table.cell(dash, 1, 9, pos_txt,      text_color=pos_col,      text_size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════
+// ▌ALERTES JSON (Webhook compatible)
+// ══════════════════════════════════════════════════════════════════════════
+
+if long_entry
+    alert('{"action":"BUY","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":"' + str.tostring(close) + '","sl":"' + str.tostring(sl_long_price) + '","tp":"' + str.tostring(tp_long_price) + '","score":"' + str.tostring(score_long) + '","source":"killingbot-vibe-code"}', alert.freq_once_per_bar_close)
+
+if short_entry
+    alert('{"action":"SELL","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","price":"' + str.tostring(close) + '","sl":"' + str.tostring(sl_short_price) + '","tp":"' + str.tostring(tp_short_price) + '","score":"' + str.tostring(score_short) + '","source":"killingbot-vibe-code"}', alert.freq_once_per_bar_close)

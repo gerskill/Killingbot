@@ -1,0 +1,130 @@
+//@version=6
+// KB 15m Regime v1 — implémentation du rapport (Kimi 12 éléments)
+// - Filtre régime balance/imbalance (AMT via ADX + déplacement hors range)
+// - Breakout qualifié : clôture au-delà du high/low des N barres précédentes + z-score volume
+// - Mean reversion RSI(2) en range, target = milieu de balance (proxy POC)
+// - Risque fixe % par trade, SL ATR, sessions optionnelles
+// - Pyramiding : jusqu'à N positions simultanées même direction, SL/TP individuels
+strategy("KB 15m Regime v1", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.cash,
+     commission_type=strategy.commission.percent, commission_value=0.1,
+     slippage=2,
+     pyramiding=99,
+     calc_on_every_tick=false)
+
+// ── Inputs ──────────────────────────────────────────────────────────────────
+grpB = "Breakout qualifié"
+lookback   = input.int(6,    "Lookback balance (barres)",     minval=2,  group=grpB) // 6x15m = 90min
+volZLen    = input.int(20,   "Fenêtre z-score volume",        minval=5,  group=grpB)
+// Défauts retunés 2026-07-19 sur BINANCE:BTCUSDT 6H (2017-2026, 211 trades) :
+// +48.4% / DD 4.3% / PF 1.53. Validé cross-asset ETHUSDT 6H : +26.8% / PF 1.28.
+// In-sample uniquement — pas de walk-forward. MR RSI(2) désactivé (perdant sur test).
+volZMin    = input.float(1.5,"Z-score volume minimum",        step=0.5,  group=grpB)
+
+grpR = "Régime"
+adxLen     = input.int(14,   "ADX longueur",                  group=grpR)
+adxTrend   = input.float(15.0,"ADX seuil imbalance",          group=grpR)
+useMR      = input.bool(false,"Mean reversion RSI(2) en range", group=grpR)
+rsiOS      = input.float(10.0,"RSI(2) survente",              group=grpR)
+rsiOB      = input.float(90.0,"RSI(2) surachat",              group=grpR)
+
+grpRisk = "Risque"
+riskPct    = input.float(0.5,"Risque par trade (%)",          step=0.25, group=grpRisk)
+maxPos     = input.int(2,    "Positions simultanées max",     minval=1, maxval=10, group=grpRisk) // risque total max = riskPct × maxPos
+atrLen     = input.int(14,   "ATR longueur",                  group=grpRisk)
+slBufAtr   = input.float(0.25,"Buffer SL (xATR)",             step=0.25, group=grpRisk)
+rrMult     = input.float(3.0,"RR momentum",                   step=0.5,  group=grpRisk)
+
+grpS = "Sessions (UTC, crypto = optionnel)"
+useSession = input.bool(false,"Activer filtre sessions",      group=grpS)
+momStartH  = input.int(13,   "Momentum début (h UTC)",        group=grpS) // ~NY
+momEndH    = input.int(21,   "Momentum fin (h UTC)",          group=grpS)
+mrStartH   = input.int(7,    "Mean-rev début (h UTC)",        group=grpS) // ~London
+mrEndH     = input.int(13,   "Mean-rev fin (h UTC)",          group=grpS)
+
+// ── Indicateurs ─────────────────────────────────────────────────────────────
+[_, _, adxVal] = ta.dmi(adxLen, adxLen)
+atrVal  = ta.atr(atrLen)
+rsi2    = ta.rsi(close, 2)
+
+// Balance = range des N barres précédentes (courante exclue)
+hh = ta.highest(high, lookback)[1]
+ll = ta.lowest(low, lookback)[1]
+mid = (hh + ll) / 2  // proxy POC
+
+// Z-score volume (proxy vitesse de mise à jour du prix)
+volMean = ta.sma(volume, volZLen)
+volStd  = ta.stdev(volume, volZLen)
+volZ    = volStd > 0 ? (volume - volMean) / volStd : 0.0
+
+// Régime
+imbalance = adxVal >= adxTrend
+inBalance = not imbalance
+
+// Sessions
+hourUTC = hour(time, "UTC")
+inWindow(startH, endH) => startH <= endH ? (hourUTC >= startH and hourUTC < endH) : (hourUTC >= startH or hourUTC < endH)
+momSessionOk = not useSession or inWindow(momStartH, momEndH)
+mrSessionOk  = not useSession or inWindow(mrStartH, mrEndH)
+
+// ── Signaux momentum (imbalance) ────────────────────────────────────────────
+breakUp   = close > hh and volZ >= volZMin and imbalance and momSessionOk
+breakDown = close < ll and volZ >= volZMin and imbalance and momSessionOk
+
+// ── Signaux mean reversion (balance) ────────────────────────────────────────
+mrLong  = useMR and inBalance and rsi2 < rsiOS and close > ll and close < mid and mrSessionOk
+mrShort = useMR and inBalance and rsi2 > rsiOB and close < hh and close > mid and mrSessionOk
+
+// ── Sizing : risque fixe % de l'équité ──────────────────────────────────────
+riskCash = strategy.equity * riskPct / 100
+buf = slBufAtr * atrVal
+
+// ── Exécution ───────────────────────────────────────────────────────────────
+// Pyramiding : jusqu'à maxPos positions ouvertes, même direction seulement
+// (un signal opposé n'inverse pas les positions ouvertes — il est ignoré).
+// Chaque entrée a un ID unique → SL/TP indépendants par position.
+canLong  = strategy.opentrades < maxPos and strategy.position_size >= 0
+canShort = strategy.opentrades < maxPos and strategy.position_size <= 0
+tradeN   = str.tostring(strategy.opentrades)
+
+if breakUp and canLong
+    slL = low - buf
+    dist = close - slL
+    if dist > 0
+        qty = riskCash / dist
+        id = "MomL" + tradeN
+        strategy.entry(id, strategy.long, qty=qty)
+        strategy.exit(id + "-X", id, stop=slL, limit=close + rrMult * dist)
+else if breakDown and canShort
+    slS = high + buf
+    dist = slS - close
+    if dist > 0
+        qty = riskCash / dist
+        id = "MomS" + tradeN
+        strategy.entry(id, strategy.short, qty=qty)
+        strategy.exit(id + "-X", id, stop=slS, limit=close - rrMult * dist)
+else if mrLong and canLong
+    slL = ll - buf
+    dist = close - slL
+    if dist > 0
+        qty = riskCash / dist
+        id = "MRL" + tradeN
+        strategy.entry(id, strategy.long, qty=qty)
+        strategy.exit(id + "-X", id, stop=slL, limit=mid)
+else if mrShort and canShort
+    slS = hh + buf
+    dist = slS - close
+    if dist > 0
+        qty = riskCash / dist
+        id = "MRS" + tradeN
+        strategy.entry(id, strategy.short, qty=qty)
+        strategy.exit(id + "-X", id, stop=slS, limit=mid)
+
+// ── Visuel ──────────────────────────────────────────────────────────────────
+plot(hh,  "Balance High", color=color.new(color.orange, 60))
+plot(ll,  "Balance Low",  color=color.new(color.orange, 60))
+plot(mid, "POC proxy",    color=color.new(color.gray, 50), style=plot.style_circles)
+bgcolor(imbalance ? color.new(color.teal, 92) : na, title="Imbalance")
+plotshape(breakUp,   "BreakUp",   shape.triangleup,   location.belowbar, color.green, size=size.tiny)
+plotshape(breakDown, "BreakDown", shape.triangledown, location.abovebar, color.red,   size=size.tiny)

@@ -1,5 +1,10 @@
 {
   "mcpServers": {
+    "tradingview-mcp": {
+      "command": "node",
+      "args": ["/Users/leclercq/tradingview-mcp/src/server.js"],
+      "type": "stdio"
+    },
     "code-review-graph": {
       "command": "uvx",
       "args": [
@@ -7,6 +12,15 @@
         "serve"
       ],
       "cwd": "/Users/leclercq/Documents/Claude/Projects/Killingbot",
+      "type": "stdio"
+    },
+    "ytdlp-mcp": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": [
+        "run",
+        "--script",
+        "/Users/leclercq/mcp-servers/ytdlp_mcp/server.py"
+      ],
       "type": "stdio"
     }
   }

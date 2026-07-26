@@ -1,0 +1,243 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// STOIC LENS PURE v3 — séquence 1-2-3 multi-timeframe (@StoicTA)
+// ───────────────────────────────────────────────────────────────────────────
+// v2 était mono-TF. v3 applique la séquence du tweet à la lettre :
+//   1 · MAP     (biais HTF)     → timeframe haut, ex. Daily pour un Swing
+//   2 · SETUP   (BnR / SFP)     → timeframe du chart, ex. 60m pour un Swing
+//   3 · TIMING  (confirmation)  → timeframe bas optionnel, ex. 15m
+//   MANAGE                      → sur le timeframe du chart (= setup)
+//
+// Presets @StoicTA (mettre le chart sur le TF "setup" indiqué) :
+//   Scalp    : chart 5m  · map 15m   · timing 1m
+//   Day      : chart 5m  · map 60m   · timing 1m
+//   Swing    : chart 60m · map Daily · timing 15m   ← preset par défaut
+//   Position : chart Daily · map Weekly · timing 60m
+//
+// Piliers inchangés (HCOM/LCOM · PDH/PDL/PDC · SMA20/200 · Fib 50-61.8),
+// mais le biais (Pilier 2) et les extrêmes (Pilier 1) sont lus sur le MAP TF.
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("STOIC LENS PURE v3", overlay=true, shorttitle="STOIC-P3",
+     initial_capital   = 10000,
+     default_qty_type  = strategy.cash,
+     commission_type   = strategy.commission.percent, commission_value = 0.04,
+     slippage          = 2,
+     max_bars_back     = 1000,
+     pyramiding        = 0)
+
+// ── Séquence 1-2-3 ─────────────────────────────────────────────────────────
+g123 = "Sequence 1-2-3 (@StoicTA)"
+mapTF     = input.timeframe("D",  "1 · Map TF (biais HTF)",        group=g123)
+useTiming = input.bool(true,      "3 · Timing (confirmation TF bas)", group=g123)
+timingTF  = input.timeframe("15", "3 · Timing TF",                 group=g123)
+// Le SETUP (2) et le MANAGE se font sur le TF du chart : mets le chart sur le
+// TF "setup" du preset (Swing = 60m).
+
+gP = "Piliers — seuils"
+minScore   = input.int(3,     "Score minimum (3=standard, 4=Golden SBS)", minval=2, maxval=4, group=gP)
+lvlTolAtr  = input.float(0.5, "Proximite niveau (xATR)",  step=0.1, minval=0.1, group=gP)
+fibLo      = input.float(0.50,"Fib zone basse",           step=0.01, group=gP)
+fibHi      = input.float(0.618,"Fib zone haute",          step=0.01, group=gP)
+
+gS = "Setups"
+useBnR     = input.bool(true, "Setup 1 — Break & Retest", group=gS)
+useSFP     = input.bool(true, "Setup 2 — SFP / Sweep",    group=gS)
+swingLen   = input.int(10,    "Longueur swing (pivots)",  minval=3, group=gS)
+
+gN = "No Edge Zone"
+noEdgePct  = input.float(0.35,"Zone centrale interdite (% range daily)", minval=0.0, maxval=0.6, step=0.05, group=gN)
+minAtrPct  = input.float(0.05,"Volatilite min (ATR/prix %)", minval=0.0, step=0.01, group=gN)
+
+gR = "Risque & gestion (manage = TF chart)"
+riskGolden = input.float(1.0, "Risque 4/4 Golden (%)",    step=0.25, group=gR)
+riskStd    = input.float(0.5, "Risque 3/4 standard (%)",  step=0.25, group=gR)
+atrLen     = input.int(14,    "ATR longueur",             group=gR)
+slBufAtr   = input.float(0.3, "Buffer stop (xATR)",       step=0.1, group=gR)
+t1R        = input.float(2.0, "T1 (R)",  step=0.5, group=gR)
+t2R        = input.float(3.0, "T2 (R)",  step=0.5, group=gR)
+t3R        = input.float(5.0, "T3 (R)",  step=0.5, group=gR)
+maxLossDay = input.int(2,     "Stop journee apres N pertes", minval=1, maxval=5, group=gR)
+
+gT = "Sessions (UTC)"
+useSession = input.bool(false,"Filtrer par session",      group=gT)
+sessStartH = input.int(3,     "Debut (h UTC — London)",   minval=0, maxval=23, group=gT)
+sessEndH   = input.int(16,    "Fin (h UTC — NY)",         minval=0, maxval=23, group=gT)
+
+// ── 1 · MAP TF — biais + extrêmes mensuels lus sur le timeframe haut ────────
+// HCOM/LCOM : plus haut / bas CLOSE journalier du mois courant (toujours daily,
+// le "close acceptance" du protocole est une notion journalière).
+monthlyExtremes() =>
+    var float hc = na
+    var float lc = na
+    bool newMonth = ta.change(time("M")) != 0
+    if newMonth
+        hc := close
+        lc := close
+    else
+        hc := na(hc) ? close : math.max(hc, close)
+        lc := na(lc) ? close : math.min(lc, close)
+    [hc, lc]
+
+[hcom, lcom] = request.security(syminfo.tickerid, "D", monthlyExtremes(), lookahead = barmerge.lookahead_off)
+
+// Biais SMA lu sur le MAP TF (Pilier 2) — c'est le "1 · map" de la séquence.
+mapBias() =>
+    float s20  = ta.sma(close, 20)
+    float s200 = ta.sma(close, 200)
+    int b = close > s20 and s20 > s200 ? 1 : close < s20 and s20 < s200 ? -1 : 0
+    [b, s20, s200]
+
+[mapDir, mapS20, mapS200] = request.security(syminfo.tickerid, mapTF, mapBias(), lookahead = barmerge.lookahead_off)
+bool biasLong  = mapDir ==  1
+bool biasShort = mapDir == -1
+bool noBias    = mapDir ==  0
+
+// ── 2 · SETUP TF (= chart) — niveaux daily + détection setups ───────────────
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead = barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead = barmerge.lookahead_off)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_off)
+
+atrNow = ta.atr(atrLen)
+tol    = lvlTolAtr * atrNow
+
+bool p1Long  = not na(lcom) and math.abs(close - lcom) <= tol * 2
+bool p1Short = not na(hcom) and math.abs(close - hcom) <= tol * 2
+
+bool nearPdl = math.abs(close - pdl) <= tol
+bool nearPdh = math.abs(close - pdh) <= tol
+bool nearPdc = math.abs(close - pdc) <= tol
+bool p3Long  = nearPdl or nearPdc
+bool p3Short = nearPdh or nearPdc
+
+float ph = ta.pivothigh(high, swingLen, swingLen)
+float pl = ta.pivotlow(low,  swingLen, swingLen)
+var float lastPH = na
+var float lastPL = na
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+float rng = (not na(lastPH) and not na(lastPL)) ? lastPH - lastPL : na
+float fibLoLong  = not na(rng) ? lastPH - rng * fibHi : na
+float fibHiLong  = not na(rng) ? lastPH - rng * fibLo : na
+bool  p4Long     = not na(rng) and rng > 0 and close >= fibLoLong and close <= fibHiLong
+float fibLoShort = not na(rng) ? lastPL + rng * fibLo : na
+float fibHiShort = not na(rng) ? lastPL + rng * fibHi : na
+bool  p4Short    = not na(rng) and rng > 0 and close >= fibLoShort and close <= fibHiShort
+
+int scoreLong  = (p1Long  ? 1 : 0) + (biasLong  ? 1 : 0) + (p3Long  ? 1 : 0) + (p4Long  ? 1 : 0)
+int scoreShort = (p1Short ? 1 : 0) + (biasShort ? 1 : 0) + (p3Short ? 1 : 0) + (p4Short ? 1 : 0)
+
+// ── 3 · TIMING TF — confirmation optionnelle sur le timeframe bas ───────────
+// "map → setup → optional timing". Le timing ne crée pas de signal : il
+// confirme que le momentum du TF bas va dans le sens du setup avant d'entrer.
+timingBias() =>
+    ta.sma(close, 20)
+float timS20 = request.security(syminfo.tickerid, timingTF, timingBias(), lookahead = barmerge.lookahead_off)
+bool timingLongOk  = not useTiming or na(timS20) or close > timS20
+bool timingShortOk = not useTiming or na(timS20) or close < timS20
+
+// ── No Edge Zone ────────────────────────────────────────────────────────────
+float dayRange = pdh - pdl
+float dayMid   = (pdh + pdl) / 2
+bool  midRange = dayRange > 0 and math.abs(close - dayMid) < dayRange * noEdgePct / 2
+bool  tooQuiet = (atrNow / close * 100) < minAtrPct
+int   hUTC     = hour(time, "UTC")
+bool  inSess   = not useSession or (sessStartH <= sessEndH ? (hUTC >= sessStartH and hUTC < sessEndH) : (hUTC >= sessStartH or hUTC < sessEndH))
+bool  noEdge   = midRange or tooQuiet or noBias or not inSess
+
+// ── Setups (sur le TF chart = setup) ────────────────────────────────────────
+bool bnrLong  = useBnR and ((close[1] < pdc and close >= pdc and low  <= pdc + tol) or (close[1] < pdh and close >= pdh and low  <= pdh + tol))
+bool bnrShort = useBnR and ((close[1] > pdc and close <= pdc and high >= pdc - tol) or (close[1] > pdl and close <= pdl and high >= pdl - tol))
+bool sfpLong  = useSFP and ((low  < pdl  and close > pdl  and close > open) or (not na(lcom) and low  < lcom and close > lcom and close > open))
+bool sfpShort = useSFP and ((high > pdh  and close < pdh  and close < open) or (not na(hcom) and high > hcom and close < hcom and close < open))
+bool patternLong  = bnrLong  or sfpLong
+bool patternShort = bnrShort or sfpShort
+
+// ── Circuit breaker ─────────────────────────────────────────────────────────
+var int lossStreak = 0
+var int lastClosed = 0
+if strategy.closedtrades > lastClosed
+    for i = lastClosed to strategy.closedtrades - 1
+        lossStreak := strategy.closedtrades.profit(i) < 0 ? lossStreak + 1 : 0
+    lastClosed := strategy.closedtrades
+bool newDay = ta.change(time("D")) != 0
+if newDay
+    lossStreak := 0
+bool dayBlocked = lossStreak >= maxLossDay
+
+// ── Signaux : map (biais) + setup (pattern+score) + timing (confirmation) ───
+bool goLong  = not noEdge and not dayBlocked and patternLong  and scoreLong  >= minScore and timingLongOk  and strategy.position_size == 0
+bool goShort = not noEdge and not dayBlocked and patternShort and scoreShort >= minScore and timingShortOk and strategy.position_size == 0
+
+// ── Exécution + gestion (manage = TF chart) ─────────────────────────────────
+float slLong  = math.min(low,  nz(lastPL, low))  - slBufAtr * atrNow
+float slShort = math.max(high, nz(lastPH, high)) + slBufAtr * atrNow
+
+if goLong
+    float risk = close - slLong
+    if risk > 0
+        float rPct = scoreLong >= 4 ? riskGolden : riskStd
+        float qty  = strategy.equity * rPct / 100 / risk
+        strategy.entry("L", strategy.long, qty = qty,
+             alert_message = '{"setup":"STOIC","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}')
+        strategy.exit("L-T1", "L", qty_percent = 50, stop = slLong, limit = close + t1R * risk)
+        strategy.exit("L-T2", "L", qty_percent = 50, stop = slLong, limit = close + t2R * risk)
+        strategy.exit("L-T3", "L",                   stop = slLong, limit = close + t3R * risk)
+
+if goShort
+    float risk = slShort - close
+    if risk > 0
+        float rPct = scoreShort >= 4 ? riskGolden : riskStd
+        float qty  = strategy.equity * rPct / 100 / risk
+        strategy.entry("S", strategy.short, qty = qty,
+             alert_message = '{"setup":"STOIC","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}","exchange":"{{exchange}}"}')
+        strategy.exit("S-T1", "S", qty_percent = 50, stop = slShort, limit = close - t1R * risk)
+        strategy.exit("S-T2", "S", qty_percent = 50, stop = slShort, limit = close - t2R * risk)
+        strategy.exit("S-T3", "S",                   stop = slShort, limit = close - t3R * risk)
+
+float entryP = strategy.position_avg_price
+float initR  = strategy.position_size > 0 ? entryP - slLong : slShort - entryP
+if strategy.position_size > 0 and initR > 0 and high >= entryP + t1R * initR
+    strategy.exit("L-BE", "L", stop = entryP)
+if strategy.position_size < 0 and initR > 0 and low  <= entryP - t1R * initR
+    strategy.exit("S-BE", "S", stop = entryP)
+
+// ── Visualisation ───────────────────────────────────────────────────────────
+plot(hcom,   "HCOM", color = color.new(color.red,   20), style = plot.style_linebr, linewidth = 2)
+plot(lcom,   "LCOM", color = color.new(color.green, 20), style = plot.style_linebr, linewidth = 2)
+plot(pdh,    "PDH",  color = color.new(color.orange, 55), style = plot.style_linebr)
+plot(pdl,    "PDL",  color = color.new(color.orange, 55), style = plot.style_linebr)
+plot(pdc,    "PDC",  color = color.new(color.gray,   45), style = plot.style_linebr)
+plot(mapS20, "Map SMA20",  color = color.new(color.aqua, 40))
+plot(mapS200,"Map SMA200", color = color.new(color.fuchsia, 40), linewidth = 2)
+bgcolor(noEdge     ? color.new(color.gray, 92) : na, title = "No Edge Zone")
+bgcolor(dayBlocked ? color.new(color.red,  88) : na, title = "Journee bloquee")
+plotshape(goLong  and scoreLong  >= 4, "Golden Long",  shape.labelup,   location.belowbar, color.lime,  text = "SBS", textcolor = color.black, size = size.small)
+plotshape(goLong  and scoreLong  == 3, "Long",         shape.triangleup, location.belowbar, color.green, size = size.tiny)
+plotshape(goShort and scoreShort >= 4, "Golden Short", shape.labeldown, location.abovebar, color.red,   text = "SBS", textcolor = color.white, size = size.small)
+plotshape(goShort and scoreShort == 3, "Short",        shape.triangledown, location.abovebar, color.maroon, size = size.tiny)
+
+var table tbl = table.new(position.top_right, 2, 9, border_width = 1)
+if barstate.islast
+    table.cell(tbl, 0, 0, "STOIC 1-2-3", text_color = color.white, bgcolor = color.new(color.black, 20))
+    table.cell(tbl, 1, 0, noEdge ? "NO EDGE" : (scoreLong >= scoreShort ? "LONG " + str.tostring(scoreLong) + "/4" : "SHORT " + str.tostring(scoreShort) + "/4"), text_color = color.white, bgcolor = noEdge ? color.new(color.gray, 30) : color.new(color.teal, 30))
+    table.cell(tbl, 0, 1, "Map TF")
+    table.cell(tbl, 1, 1, mapTF)
+    table.cell(tbl, 0, 2, "Map biais")
+    table.cell(tbl, 1, 2, biasLong ? "LONG" : biasShort ? "SHORT" : "NO EDGE")
+    table.cell(tbl, 0, 3, "Timing TF")
+    table.cell(tbl, 1, 3, useTiming ? timingTF : "off")
+    table.cell(tbl, 0, 4, "HCOM")
+    table.cell(tbl, 1, 4, str.tostring(hcom, format.mintick))
+    table.cell(tbl, 0, 5, "LCOM")
+    table.cell(tbl, 1, 5, str.tostring(lcom, format.mintick))
+    table.cell(tbl, 0, 6, "PDH")
+    table.cell(tbl, 1, 6, str.tostring(pdh, format.mintick))
+    table.cell(tbl, 0, 7, "PDL")
+    table.cell(tbl, 1, 7, str.tostring(pdl, format.mintick))
+    table.cell(tbl, 0, 8, "P1/P2/P3/P4")
+    table.cell(tbl, 1, 8, (p1Long or p1Short ? "1" : "0") + (noBias ? "0" : "1") + (p3Long or p3Short ? "1" : "0") + (p4Long or p4Short ? "1" : "0"))
+
+alertcondition(goLong,  "Stoic Long",  "STOIC LONG signal")
+alertcondition(goShort, "Stoic Short", "STOIC SHORT signal")
