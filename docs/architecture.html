@@ -6,30 +6,60 @@
 <title>Killingbot — Carte d'architecture</title>
 <style>
 :root{
-  --bg:#0d0f0e; --panel:#141816; --panel2:#1a1f1c; --line:#252b27;
+  --bg:#0d0f0e; --panel:#141816; --panel2:#1a1f1c; --line:#252b27; --line2:#323a35;
   --txt:#e6e8e4; --dim:#8a9188; --accent:#b0c080; --accent2:#6f8f3f;
   --warn:#d9a441; --bad:#c0603a; --good:#7fa650;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--txt);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;padding:32px 24px 80px;max-width:1180px;margin:0 auto}
+body{background:var(--bg);color:var(--txt);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;padding:28px 22px 90px;max-width:1200px;margin:0 auto}
 h1{font-size:26px;font-weight:650;letter-spacing:-.02em}
-h2{font-size:15px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin:38px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
-h3{font-size:14px;font-weight:600;margin:0 0 6px}
+h2{font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin:34px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+h2 .cnt{font-size:11px;color:var(--dim);letter-spacing:0;text-transform:none;font-weight:500}
+h3{font-size:14px;font-weight:600;margin:0}
 .sub{color:var(--dim);font-size:13px;margin-top:5px}
-.hero{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:20px 22px;margin-bottom:6px}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:16px}
-.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:11px 13px}
-.kpi b{display:block;font-size:21px;font-weight:650;letter-spacing:-.02em}
-.kpi span{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em}
-.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:14px 0}
-.node{flex:1 1 165px;min-width:155px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 14px;position:relative}
-.node .tag{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:5px}
-.node code{font-size:11.5px;color:var(--accent);background:none;display:block;margin-top:3px;word-break:break-all}
-.arrow{align-self:center;color:var(--accent2);font-size:17px;flex:0 0 auto}
-table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:4px}
-th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--line)}
+.hero{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:20px 22px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:9px;margin-top:16px}
+.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:11px 13px;transition:border-color .15s}
+.kpi:hover{border-color:var(--line2)}
+.kpi b{display:block;font-size:21px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi span{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+
+/* ── flow interactif ── */
+.flow{display:flex;flex-wrap:wrap;gap:7px;align-items:stretch;margin:12px 0}
+.node{flex:1 1 160px;min-width:150px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:12px 13px;cursor:pointer;transition:all .16s;text-align:left;color:inherit;font:inherit}
+.node:hover{border-color:var(--accent2);background:var(--panel2);transform:translateY(-1px)}
+.node.on{border-color:var(--accent);background:var(--panel2)}
+.node .tag{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:4px}
+.node .nm{font-weight:600;font-size:13.5px}
+.node code{font-size:11px;color:var(--accent);display:block;margin-top:3px;word-break:break-all;opacity:.85}
+.arrow{align-self:center;color:var(--accent2);font-size:16px;flex:0 0 auto;opacity:.6}
+.detail{background:var(--panel2);border:1px solid var(--accent2);border-radius:9px;padding:15px 17px;margin:4px 0 12px;display:none}
+.detail.on{display:block;animation:fade .2s ease}
+@keyframes fade{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+.detail h4{font-size:13px;margin-bottom:8px;color:var(--accent)}
+.detail ul{list-style:none;font-size:13px}
+.detail li{padding:4px 0;color:var(--dim);border-bottom:1px solid rgba(37,43,39,.6)}
+.detail li:last-child{border:none}
+.detail li code{color:var(--txt);font-size:12px}
+.detail li em{color:var(--dim);font-style:normal;font-size:12px}
+
+/* ── filtres ── */
+.bar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center}
+.fb{background:var(--panel);border:1px solid var(--line);color:var(--dim);border-radius:20px;padding:5px 13px;font-size:12px;font-weight:550;cursor:pointer;transition:all .14s;font-family:inherit}
+.fb:hover{border-color:var(--line2);color:var(--txt)}
+.fb.on{background:var(--accent2);border-color:var(--accent2);color:#0d0f0e}
+.search{background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:20px;padding:5px 13px;font-size:12px;font-family:inherit;min-width:170px;outline:none;transition:border-color .14s}
+.search:focus{border-color:var(--accent2)}
+.search::placeholder{color:var(--dim)}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
+th:hover{color:var(--txt)}
+th .ind{opacity:.4;font-size:9px}
 td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:var(--panel)}
+tr.hide{display:none}
 .pill{display:inline-block;font-size:10.5px;font-weight:650;padding:2.5px 8px;border-radius:20px;letter-spacing:.03em;white-space:nowrap}
 .p-ok{background:rgba(127,166,80,.16);color:var(--good);border:1px solid rgba(127,166,80,.32)}
 .p-warn{background:rgba(217,164,65,.14);color:var(--warn);border:1px solid rgba(217,164,65,.3)}
@@ -37,161 +67,228 @@ tr:last-child td{border-bottom:none}
 .p-dim{background:rgba(138,145,136,.12);color:var(--dim);border:1px solid rgba(138,145,136,.25)}
 .num{font-variant-numeric:tabular-nums}
 .pos{color:var(--good)} .neg{color:var(--bad)}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:15px 17px;margin-bottom:9px}
+
+/* ── todo cards ── */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start;transition:all .15s}
+.card:hover{border-color:var(--line2)}
 .card.hi{border-left:3px solid var(--bad)}
 .card.mid{border-left:3px solid var(--warn)}
-.card.lo{border-left:3px solid var(--line)}
-.card p{color:var(--dim);font-size:13px;margin-top:5px}
-.rules li{margin:7px 0;color:var(--dim);font-size:13.5px;padding-left:2px}
-.rules{padding-left:19px}
+.card.lo{border-left:3px solid var(--line2)}
+.card.done{opacity:.42}
+.card.done .ttl{text-decoration:line-through}
+.chk{width:17px;height:17px;border:1.5px solid var(--line2);border-radius:5px;flex:0 0 auto;margin-top:2px;cursor:pointer;position:relative;transition:all .15s}
+.chk:hover{border-color:var(--accent)}
+.chk.on{background:var(--accent2);border-color:var(--accent2)}
+.chk.on::after{content:"✓";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#0d0f0e;font-size:12px;font-weight:800}
+.card .bd{flex:1}
+.card p{color:var(--dim);font-size:13px;margin-top:4px}
+.gid{font-size:10px;color:var(--dim);font-weight:700;letter-spacing:.06em;margin-right:7px}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media(max-width:780px){.two{grid-template-columns:1fr}.flow{flex-direction:column}.arrow{transform:rotate(90deg);align-self:flex-start;margin-left:22px}}
+.rules{padding-left:18px}
+.rules li{margin:7px 0;color:var(--dim);font-size:13.5px}
 .rules strong{color:var(--txt);font-weight:600}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-@media(max-width:760px){.two{grid-template-columns:1fr}.flow{flex-direction:column}.arrow{transform:rotate(90deg);align-self:flex-start;margin-left:20px}}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+.prog{height:3px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:9px}
+.prog i{display:block;height:100%;background:var(--accent2);width:0;transition:width .3s}
+footer{margin-top:40px;padding-top:15px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
 </style>
 </head>
 <body>
 
 <div class="hero">
   <h1>Killingbot — carte d'architecture</h1>
-  <div class="sub">Généré le 26 juillet 2026 · TradingView → webhook Python → paper trading · boucle de recherche agents</div>
+  <div class="sub">26 juillet 2026 · TradingView → webhook Python → paper trading · boucle de recherche agents</div>
   <div class="kpis">
     <div class="kpi"><b>1</b><span>strat confirmée live</span></div>
     <div class="kpi"><b>18</b><span>scripts Pine</span></div>
     <div class="kpi"><b>31</b><span>modules Python</span></div>
-    <div class="kpi"><b class="neg">130</b><span>fichiers non commités</span></div>
-    <div class="kpi"><b class="neg">0</b><span>walk-forward fait</span></div>
+    <div class="kpi"><b class="pos" id="kCommit">0</b><span>non commités</span></div>
+    <div class="kpi"><b class="pos">2</b><span>walk-forward faits</span></div>
   </div>
 </div>
 
-<h2>Flux principal — du signal à la position</h2>
-<div class="flow">
-  <div class="node"><span class="tag">1 · Signal</span>TradingView<code>pine_scripts/strategies/*.pine</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">2 · Ingest</span>FastAPI :5001<code>webhook_server_v2.py</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">3 · Filtres</span>régime + risque<code>sidecars/*.py</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">4 · Exécution</span>paper only<code>core/paper_executor.py</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">5 · UI</span>Next.js / Vercel<code>app/views/*.tsx</code></div>
-</div>
-<div class="flow">
-  <div class="node"><span class="tag">Boucle recherche</span>orchestrator<code>agents/orchestrator.py</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">Explore</span>génère + backteste<code>agents/strategy_explorer.py</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">Garde-fous</span>WF · DSR · Monte Carlo<code>agents/validation.py</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">Mémoire</span>classement<code>vault/BEST_STRATEGIES.md</code></div>
-  <div class="arrow">→</div>
-  <div class="node"><span class="tag">Codegen</span>Jinja2 → Pine<code>sovereign/engine.py</code></div>
-</div>
+<h2>Flux principal <span class="cnt">— clique un bloc pour voir les fichiers</span></h2>
+<div class="flow" id="flow1"></div>
+<div class="detail" id="d1"></div>
 
-<h2>Stratégies — statut réel</h2>
+<h2>Boucle de recherche <span class="cnt">— clique un bloc</span></h2>
+<div class="flow" id="flow2"></div>
+<div class="detail" id="d2"></div>
+
+<h2>Stratégies <span class="cnt" id="stratCnt"></span></h2>
+<div class="bar">
+  <button class="fb on" data-f="all">Toutes</button>
+  <button class="fb" data-f="ok">✓ Qui marchent</button>
+  <button class="fb" data-f="warn">Partielles</button>
+  <button class="fb" data-f="bad">✗ Rejetées</button>
+  <input class="search" id="q" placeholder="filtrer…">
+</div>
 <div class="scroll">
-<table>
-<thead><tr><th>Fichier</th><th>Statut</th><th>Meilleur résultat vérifié</th><th>À retenir</th></tr></thead>
-<tbody>
-<tr>
-  <td><code>pp_st_btc_4h_final.pine</code></td>
-  <td><span class="pill p-ok">CONFIRMÉE LIVE</span></td>
-  <td class="num pos">+2947 % · DD 24,5 % · PF 2,52<br><span class="sub">BTCUSDT 4H · 59 trades</span></td>
-  <td>Seule testée en direct dans le Strategy Tester. Référence du projet.</td>
-</tr>
-<tr>
-  <td><code>stoic_lens_pure_v2.pine</code></td>
-  <td><span class="pill p-ok">GÉNÉRALISE</span></td>
-  <td class="num pos">17/20 symboles positifs<br><span class="sub">Daily · aucun DD &gt; 8,8 %</span></td>
-  <td>Meilleure robustesse multi-marchés. Sweet spots : 15m et Daily. Garder les défauts — le tuning SPX casse BTC.</td>
-</tr>
-<tr>
-  <td><code>stoic_123_ribbon.pine</code></td>
-  <td><span class="pill p-ok">OK CRYPTO/INDICES</span></td>
-  <td class="num pos">BTC +18,1 % · SPX +21,1 %<br><span class="sub">8h · PF 1,28</span></td>
-  <td>Trend-following pur. <span class="neg">Forex cassé (−9,4 %)</span>, <span class="neg">actions intraday catastrophe (NVDA −43 %)</span>.</td>
-</tr>
-<tr>
-  <td><code>pp_st_btc_4h_v2_ls.pine</code></td>
-  <td><span class="pill p-warn">PARTIEL</span></td>
-  <td>SL dur : DD shorts 33 % → 23 %</td>
-  <td>V1 + shorts miroir. Défaut retenu : SL sur shorts seulement.</td>
-</tr>
-<tr>
-  <td><code>stoic_sbs.pine</code></td>
-  <td><span class="pill p-bad">REJETÉE</span></td>
-  <td class="num">+2,3 % au mieux (1h)</td>
-  <td>Séquence SBS mécanisée. Méthode discrétionnaire → perd son edge. Garder comme indicateur visuel.</td>
-</tr>
-<tr>
-  <td><code>kb_confluence_v1.pine</code></td>
-  <td><span class="pill p-bad">OVERFIT</span></td>
-  <td>BTC +65 % mais <span class="neg">ETH −3,4 %</span></td>
-  <td>Échec cross-asset. Ne pas déployer.</td>
-</tr>
-<tr>
-  <td><code>kb_15m_strategy.pine</code></td>
-  <td><span class="pill p-dim">SUPPRIMÉE</span></td>
-  <td class="neg">−8,76 % · PF 0,465</td>
-  <td>Annonçait +7,9 %/mois dans ses commentaires. Le live a dit non.</td>
-</tr>
-</tbody>
+<table id="tbl">
+<thead><tr>
+  <th data-s="0">Fichier <span class="ind">↕</span></th>
+  <th data-s="1">Statut <span class="ind">↕</span></th>
+  <th data-s="2" data-num="1">Meilleur résultat vérifié <span class="ind">↕</span></th>
+  <th>À retenir</th>
+</tr></thead>
+<tbody></tbody>
 </table>
 </div>
 
 <h2>Construit mais pas branché</h2>
-<div class="two">
-  <div class="card lo"><h3>agents/garch_position_sizer.py</h3><p>Sizing GARCH(1,1) avec repli EWMA. Testé sur données synthétiques uniquement. Jamais appelé depuis le webhook.</p></div>
-  <div class="card lo"><h3>agents/stoic_multi_agent_system.py</h3><p>Système 7 agents async (analyste, macro, validateur, risque, exécution, apprentissage). Nécessite clés broker + <code>ANTHROPIC_API_KEY</code>.</p></div>
-  <div class="card lo"><h3>agents/llm_generator.py</h3><p>Génération de variantes via Claude. Bloqué : <code>ANTHROPIC_API_KEY</code> commentée dans <code>.env</code>. La boucle tourne quand même sur les heuristiques.</p></div>
-  <div class="card lo"><h3>agents/validation.py</h3><p>Walk-forward + deflated Sharpe + Monte Carlo. <strong>Existe, corrigé, mais jamais lancé sur les stratégies Pine.</strong></p></div>
-</div>
+<div class="two" id="unwired"></div>
 
-<h2>À faire — par priorité</h2>
-<div class="card hi">
-  <h3>G1 · Walk-forward sur les stratégies retenues</h3>
-  <p>Tous les résultats ci-dessus sont <strong>in-sample</strong>. Le module <code>agents/validation.py</code> est prêt et corrigé, mais n'a jamais tourné sur les stratégies Pine. Sans ça, aucun chiffre n'est fiable pour du réel.</p>
-</div>
-<div class="card hi">
-  <h3>G5 · 130 fichiers non commités</h3>
-  <p>Risque de perte pure. Faire le tri et committer — plusieurs stratégies testées aujourd'hui ne sont dans aucun commit.</p>
-</div>
-<div class="card mid">
-  <h3>G2 · Finir la grille ruban 40 symboles × 8 TF</h3>
-  <p>Crypto 8h fait (8/10 positifs). Restent actions, indices, forex sur tous les timeframes.</p>
-</div>
-<div class="card mid">
-  <h3>G6 · Opening Range New York</h3>
-  <p>Visible sur le chart live de @StoicTA, absent de toutes les stratégies. Pourrait sauver les bas timeframes (5m/15m actuellement négatifs).</p>
-</div>
-<div class="card mid">
-  <h3>G3 · Brancher le sizing GARCH</h3>
-  <p>Code prêt, testé sur synthétique. Un appel depuis <code>webhook_server_v2.py</code> suffit.</p>
-</div>
-<div class="card lo">
-  <h3>G4 · Clé API · G7 · Process fantôme port 5001</h3>
-  <p>Décommenter <code>ANTHROPIC_API_KEY</code> pour débloquer la génération LLM. Vérifier <code>lsof -i :5001</code> (PID 57999 jamais confirmé arrêté).</p>
-</div>
+<h2>À faire <span class="cnt" id="todoCnt"></span></h2>
+<div class="prog"><i id="progBar"></i></div>
+<div style="margin-top:10px" id="todos"></div>
 
 <h2>Règles du projet</h2>
 <ul class="rules">
   <li><strong>Aucun chiffre sans test live.</strong> Un commentaire dans un <code>.pine</code> peut mentir — <code>kb_15m</code> annonçait +7,9 %/mois, le live a donné PF 0,465.</li>
   <li><strong>Jamais d'ordre réel automatique.</strong> Paper trading jusqu'à validation walk-forward.</li>
-  <li><strong>Un seul script attaché au chart.</strong> Empiler 3+ stratégies avec <code>request.security</code> déclenche « Internal server study error » — le testeur n'affiche plus rien.</li>
+  <li><strong>Un seul script attaché au chart.</strong> Empiler 3+ stratégies avec <code>request.security</code> déclenche « Internal server study error ».</li>
   <li><strong>Actions : jamais en intraday.</strong> Les bougies 8h coupent les sessions → gaps overnight au milieu des barres.</li>
 </ul>
 
-<h2>Pièges connus (outillage)</h2>
+<h2>Pièges outillage</h2>
 <ul class="rules">
-  <li><code>pine_set_source</code> écrit dans un buffer caché qui <strong>ne s'attache pas au chart</strong>. L'attache manuelle (Cmd+Enter) reste nécessaire.</li>
-  <li><code>batch_run</code> timeout au-delà de ~5 symboles — utiliser la boucle manuelle.</li>
-  <li>Coller du code avec le focus sur le <strong>champ titre</strong> remplace le nom du script, pas son contenu.</li>
+  <li><code>pine_set_source</code> écrit dans un buffer caché qui <strong>ne s'attache pas au chart</strong>. Attache manuelle (Cmd+Enter) nécessaire.</li>
+  <li><code>batch_run</code> timeout au-delà de ~5 symboles — boucle manuelle.</li>
+  <li>Coller avec le focus sur le <strong>champ titre</strong> remplace le nom du script, pas son contenu.</li>
 </ul>
 
-<footer>
-  Fichier compagnon pour agents : <code>docs/ARCHITECTURE.json</code> — à lire avant toute nouvelle feature.
-</footer>
+<footer>Compagnon agents : <code>docs/ARCHITECTURE.json</code> · état sauvegardé localement (cases à cocher).</footer>
 
+<script>
+const FLOW1=[
+ {tag:"1 · Signal",nm:"TradingView",code:"pine_scripts/",files:[["*.pine","Pine Script v6 — génère les signaux"],["alert_message","JSON envoyé au webhook"],["format",'{"setup","dir","ticker","tf","price"}']]},
+ {tag:"2 · Ingest",nm:"FastAPI :5001",code:"webhook_server_v2.py",files:[["/webhook","réception des alertes"],["/health, /signals","monitoring"],["core/queue.py","file async"],["webhook_server.py","legacy Flask v1"]]},
+ {tag:"3 · Filtres",nm:"Sidecars",code:"sidecars/",files:[["signal_filter.py","filtre régime de marché"],["risk_manager.py","sizing + garde-fous"],["core/market_regime.py","trend / range"],["core/macro_calendar.py","kill switch macro"]]},
+ {tag:"4 · Exécution",nm:"Paper only",code:"core/paper_executor.py",files:[["paper_executor.py","lock fichier sur positions"],["strategy_engine.py","backtest Python avec coûts"],["vault/paper_positions.json","état persistant"],["trades.csv","historique"]]},
+ {tag:"5 · UI",nm:"Next.js / Vercel",code:"app/views/",files:[["DashboardView.tsx","vue principale"],["BacktestsView.tsx","résultats"],["StrategiesView.tsx","liste stratégies"],["scripts/sync_dashboard.py","sync des données"]]}
+];
+const FLOW2=[
+ {tag:"Orchestrateur",nm:"Boucle rounds",code:"agents/orchestrator.py",files:[["orchestrator.py","explore → score → suggère"],["max 5 rounds","cible 10 %/mois"]]},
+ {tag:"Explore",nm:"Génère + teste",code:"agents/strategy_explorer.py",files:[["strategy_explorer.py","variantes de params"],["yfinance","6 paires crypto, 1h"],["llm_generator.py","variantes via Claude (clé absente)"]]},
+ {tag:"Garde-fous",nm:"Anti-overfit",code:"agents/validation.py",files:[["walk_forward_split","IS / OOS jamais mélangés"],["deflated_sharpe_ratio","corrige le biais de sélection"],["monte_carlo_stability","perturbe les params ±10 %"]]},
+ {tag:"Mémoire",nm:"Classement",code:"vault/",files:[["memory_agent.py","classe + suggère"],["BEST_STRATEGIES.md","top 10"],["AGENT_LOG.md","journal"]]},
+ {tag:"Codegen",nm:"Jinja2 → Pine",code:"sovereign/engine.py",files:[["engine.py","params gagnants → script Pine"],["templates/","modèles .pine.j2"]]}
+];
+const STRATS=[
+ {f:"pp_st_btc_4h_final.pine",s:"ok",lbl:"CONFIRMÉE LIVE",v:2947,r:'<span class="pos">+2947 % · DD 24,5 % · PF 2,52</span><br><span class="sub">BTCUSDT 4H · 59 trades</span>',n:"Seule testée en direct dans le Strategy Tester. <strong>Walk-forward pas encore fait.</strong>"},
+ {f:"stoic_lens_pure_v2.pine",s:"ok",lbl:"GÉNÉRALISE",v:100,r:'<span class="pos">17/20 symboles positifs</span><br><span class="sub">Daily · aucun DD > 8,8 %</span>',n:"Meilleure robustesse multi-marchés. Sweet spots : 15m et Daily. <strong>Walk-forward pas encore fait</strong> — chiffres in-sample."},
+ {f:"stoic_123_ribbon.pine",s:"bad",lbl:"ÉCHOUE LE WF",v:-131,r:'IS +18,1 % mais <span class="neg">OOS 3/10 positifs</span><br><span class="sub">dégradation médiane −131 % · DSR 0,86</span>',n:'Walk-forward du 26/07 : effondrement out-of-sample sur Daily ET 8h. Monte Carlo 100 % stable → pas du sur-apprentissage de params, mais un edge qui ne persiste pas dans le temps (dépendance au régime).'},
+ {f:"pp_st_btc_4h_v2_ls.pine",s:"warn",lbl:"PARTIEL",v:10,r:"SL dur : DD shorts 33 % → 23 %",n:"V1 + shorts miroir. Défaut retenu : SL sur shorts seulement."},
+ {f:"stoic_sbs.pine",s:"bad",lbl:"REJETÉE",v:2.3,r:'<span class="num">+2,3 % au mieux (1h)</span>',n:"Séquence SBS mécanisée. Méthode discrétionnaire → perd son edge. Garder comme indicateur visuel."},
+ {f:"kb_confluence_v1.pine",s:"bad",lbl:"OVERFIT",v:-3.4,r:'BTC +65 % mais <span class="neg">ETH −3,4 %</span>',n:"Échec cross-asset. Ne pas déployer."},
+ {f:"kb_15m_strategy.pine",s:"bad",lbl:"SUPPRIMÉE",v:-8.76,r:'<span class="neg">−8,76 % · PF 0,465</span>',n:"Annonçait +7,9 %/mois dans ses commentaires. Le live a dit non."}
+];
+const UNWIRED=[
+ ["agents/garch_position_sizer.py","Sizing GARCH(1,1) avec repli EWMA. Testé sur données synthétiques uniquement. Jamais appelé depuis le webhook."],
+ ["agents/stoic_multi_agent_system.py","Système 7 agents async. Nécessite clés broker + <code>ANTHROPIC_API_KEY</code>."],
+ ["agents/llm_generator.py","Génération de variantes via Claude. Bloqué : clé commentée dans <code>.env</code>. La boucle tourne sur les heuristiques."],
+ ["agents/validation.py","Walk-forward + deflated Sharpe + Monte Carlo. <strong>Existe et corrigé, jamais lancé sur les stratégies Pine.</strong>"]
+];
+const TODOS=[
+ {id:"G5",p:"hi",t:"Committer le travail",d:"164 fichiers commités le 26/07. Vidéo 533 Mo et repo imbriqué exclus du suivi.",done:true},
+ {id:"G1",p:"hi",t:"Walk-forward — ruban testé",d:"Fait le 26/07 via <code>agents/stoic_ribbon_wf.py</code>. <strong>Le ruban échoue</strong> : IS 10/10 positifs, OOS 3/10, dégradation médiane −131 %, DSR 0,86. Voir <code>backtest/WALK_FORWARD_2026-07-26.md</code>.",done:true},
+ {id:"G1b",p:"hi",t:"Walk-forward sur pp_st_btc_4h_final",d:"La seule stratégie confirmée en direct n'a jamais été soumise au walk-forward. Priorité suivante."},
+ {id:"G1c",p:"hi",t:"Walk-forward sur stoic_lens_pure_v2",d:"Meilleur candidat restant sur le critère de généralisation (17/20 Daily). Même traitement à appliquer."},
+ {id:"G2",p:"lo",t:"Grille 40 × 8 — en attente",d:"<strong>Suspendue.</strong> Élargir une recherche in-sample sur un système qui échoue le walk-forward ne produirait que des chiffres non exploitables. À relancer avec le split IS/OOS intégré à la boucle."},
+ {id:"G6",p:"mid",t:"Opening Range New York",d:"Visible sur le chart live de @StoicTA, absent de toutes les stratégies. Pourrait sauver les bas timeframes (5m/15m négatifs)."},
+ {id:"G3",p:"mid",t:"Brancher le sizing GARCH",d:"Code prêt, testé sur synthétique. Un appel depuis <code>webhook_server_v2.py</code> suffit."},
+ {id:"G4",p:"lo",t:"Débloquer ANTHROPIC_API_KEY",d:"Commentée dans <code>.env</code> → bloque <code>agents/llm_generator.py</code>."},
+ {id:"G7",p:"lo",t:"Process fantôme port 5001",d:"PID 57999 jamais confirmé arrêté. Vérifier <code>lsof -i :5001</code>."}
+];
+
+// ── flows ──
+function buildFlow(el,det,data){
+  const c=document.getElementById(el),d=document.getElementById(det);
+  data.forEach((n,i)=>{
+    if(i)c.insertAdjacentHTML("beforeend",'<span class="arrow">→</span>');
+    const b=document.createElement("button");
+    b.className="node";
+    b.innerHTML=`<span class="tag">${n.tag}</span><span class="nm">${n.nm}</span><code>${n.code}</code>`;
+    b.onclick=()=>{
+      const was=b.classList.contains("on");
+      c.querySelectorAll(".node").forEach(x=>x.classList.remove("on"));
+      if(was){d.classList.remove("on");return}
+      b.classList.add("on");
+      d.innerHTML=`<h4>${n.nm}</h4><ul>${n.files.map(f=>`<li><code>${f[0]}</code> — <em>${f[1]}</em></li>`).join("")}</ul>`;
+      d.classList.add("on");
+    };
+    c.appendChild(b);
+  });
+}
+buildFlow("flow1","d1",FLOW1);
+buildFlow("flow2","d2",FLOW2);
+
+// ── table ──
+const tb=document.querySelector("#tbl tbody");
+STRATS.forEach(s=>{
+  const tr=document.createElement("tr");
+  tr.dataset.s=s.s; tr.dataset.v=s.v;
+  tr.dataset.txt=(s.f+" "+s.lbl+" "+s.n).toLowerCase().replace(/<[^>]+>/g,"");
+  tr.innerHTML=`<td><code>${s.f}</code></td><td><span class="pill p-${s.s}">${s.lbl}</span></td><td class="num">${s.r}</td><td>${s.n}</td>`;
+  tb.appendChild(tr);
+});
+const cntEl=document.getElementById("stratCnt");
+function applyFilter(){
+  const f=document.querySelector(".fb.on").dataset.f, q=document.getElementById("q").value.toLowerCase().trim();
+  let n=0;
+  tb.querySelectorAll("tr").forEach(tr=>{
+    const okF=(f==="all"||tr.dataset.s===f), okQ=(!q||tr.dataset.txt.includes(q));
+    tr.classList.toggle("hide",!(okF&&okQ)); if(okF&&okQ)n++;
+  });
+  cntEl.textContent=`— ${n} affichée${n>1?"s":""} sur ${STRATS.length}`;
+}
+document.querySelectorAll(".fb").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".fb").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on"); applyFilter();
+});
+document.getElementById("q").oninput=applyFilter;
+let sortDir={};
+document.querySelectorAll("#tbl th[data-s]").forEach(th=>{
+  th.onclick=()=>{
+    const i=+th.dataset.s, num=th.dataset.num, dir=sortDir[i]=!sortDir[i];
+    [...tb.querySelectorAll("tr")].sort((a,b)=>{
+      const va=num?+a.dataset.v:a.cells[i].innerText, vb=num?+b.dataset.v:b.cells[i].innerText;
+      return (num? va-vb : String(va).localeCompare(vb))*(dir?1:-1);
+    }).forEach(tr=>tb.appendChild(tr));
+  };
+});
+applyFilter();
+
+// ── unwired ──
+document.getElementById("unwired").innerHTML=UNWIRED.map(u=>
+  `<div class="card lo"><div class="bd"><h3>${u[0]}</h3><p>${u[1]}</p></div></div>`).join("");
+
+// ── todos (état persistant) ──
+const KEY="kb_todo_v1";
+let state={}; try{state=JSON.parse(localStorage.getItem(KEY))||{}}catch(e){}
+TODOS.forEach(t=>{ if(t.done&&state[t.id]===undefined)state[t.id]=true; });
+const todoEl=document.getElementById("todos");
+function renderTodos(){
+  todoEl.innerHTML=TODOS.map(t=>{
+    const on=!!state[t.id];
+    return `<div class="card ${t.p} ${on?"done":""}" data-id="${t.id}">
+      <div class="chk ${on?"on":""}" role="checkbox" aria-checked="${on}" tabindex="0"></div>
+      <div class="bd"><h3 class="ttl"><span class="gid">${t.id}</span>${t.t}</h3><p>${t.d}</p></div></div>`;
+  }).join("");
+  todoEl.querySelectorAll(".card").forEach(c=>{
+    const tog=()=>{const id=c.dataset.id;state[id]=!state[id];localStorage.setItem(KEY,JSON.stringify(state));renderTodos()};
+    const chk=c.querySelector(".chk");
+    chk.onclick=tog;
+    chk.onkeydown=e=>{if(e.key===" "||e.key==="Enter"){e.preventDefault();tog()}};
+  });
+  const done=TODOS.filter(t=>state[t.id]).length;
+  document.getElementById("todoCnt").textContent=`— ${done}/${TODOS.length} fait${done>1?"s":""}`;
+  document.getElementById("progBar").style.width=(done/TODOS.length*100)+"%";
+}
+renderTodos();
+</script>
 </body>
 </html>
