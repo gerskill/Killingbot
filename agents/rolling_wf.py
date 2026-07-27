@@ -75,7 +75,8 @@ def rolling_walk_forward(backtest_fn, df: pd.DataFrame, params: dict,
 
 def main():
     ap = argparse.ArgumentParser(description="Walk-forward glissant")
-    ap.add_argument("--strategy", default="ppst", choices=["ppst", "lens"])
+    ap.add_argument("--strategy", default="ppst",
+                    choices=["ppst", "lens", "ptb", "break"])
     ap.add_argument("--interval", default="4h")
     ap.add_argument("--days", type=int, default=3200)
     ap.add_argument("--windows", type=int, default=6)
@@ -85,8 +86,12 @@ def main():
 
     if a.strategy == "ppst":
         from ppst_wf import fetch, run_backtest, DEFAULTS
-    else:
+    elif a.strategy == "lens":
         from lens_wf import fetch, run_backtest, DEFAULTS
+    else:
+        # "ptb" et "break" partagent le même moteur, seul `entry_mode` change
+        from ptb_wf import fetch, run_backtest, DEFAULTS as _D
+        DEFAULTS = {**_D, "entry_mode": a.strategy}
 
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
                "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "DOGEUSDT"]

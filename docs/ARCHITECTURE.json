@@ -13,7 +13,10 @@
     "Avant de valider un systeme de score multi-piliers : mesurer le taux de declenchement CONJOINT des piliers, pas seulement individuel. Le Lens echouait car P1 et P2 decrivent des situations de marche opposees.",
     "Walk-forward glissant : isoler chaque fenetre avec trade_from. Sans ca, les trades du contexte de warm-up comptent et le score est gonfle (6/6 fenetres positives au lieu de 5/6).",
     "Preferer la MEDIANE a la moyenne pour juger un panier : sur PP-ST, moyenne +2.54%/mois contre mediane ~+0.5%/mois. Quelques symboles tirent la moyenne.",
-    "Ne pas filtrer les symboles sur le drawdown in-sample : cela ecarte les actifs volatils, qui en crypto sont ceux qui rapportent (-0.20 pt mesure)."
+    "Ne pas filtrer les symboles sur le drawdown in-sample : cela ecarte les actifs volatils, qui en crypto sont ceux qui rapportent (-0.20 pt mesure).",
+    "Test de permutation obligatoire : appliquer les memes regles a des rendements melanges (forme des bougies conservee). Sur le 1-2-3 cassure, le bruit donne deja +0.77%/mois — l'edge reel est la difference, pas le total.",
+    "Un stop serre n'ameliore pas forcement l'esperance : l'entree PTB (stop sous la derniere bougie de repli) fait chuter le taux de reussite de 40.6% a 19.4% en crypto 4h. Le bruit intra-barre sort la position avant le mouvement.",
+    "Une mecanique qui marche sur un instrument ne se transpose pas mecaniquement : le PTB est concu pour le NQ 5min, pas la crypto 4h."
   ],
   "layers": [
     {
@@ -152,6 +155,34 @@
       "verdict": "SEULE strategie validee. Attente realiste ~+0.5%/mois (6%/an) sur BTC+ETH avec filtre d'eligibilite, PAS +2947% ni +2.54%/mois (moyenne gonflee par outliers). ALERTE : derniere fenetre glissante negative."
     },
     {
+      "fichier": "agents/ptb_wf.py (mode 'break') — pas encore en Pine",
+      "statut": "MEILLEUR_CANDIDAT_A_CONFIRMER",
+      "logique": "Sequence 1-2-3 @StoicTA : Step1 impulsion, Step2 creux, Step3 cloture au-dessus du plus haut N barres + ruban 10/20 aligne. Stop sous le creux de Step 2, cibles 2R puis extension Fib 261.8%. Longs ET shorts.",
+      "walk_forward": {
+        "date": "2026-07-27",
+        "split_70_30": {
+          "oos_positifs": "10/10",
+          "oos_median_pct_mois": 1.25,
+          "wr_moyen_pct": 40.6
+        },
+        "glissant_6_fenetres": {
+          "fenetres_positives": "6/6",
+          "moyenne_pct_mois": 1.7,
+          "mediane_pct_mois": 1.61,
+          "ecart_type": 0.38,
+          "derniere_fenetre_pct": 1.14,
+          "symboles_constants": "10/10"
+        },
+        "controles": {
+          "vs_buy_and_hold_btc": "+347 points",
+          "shorts_contribuent": "longs seuls +1.40%/m -> avec shorts +2.33%/m",
+          "permutation_z": 4.3,
+          "permutation_bruit_pct_mois": 0.77
+        }
+      },
+      "verdict": "Surpasse PP-ST sur TOUS les criteres, y compris la derniere fenetre (+1.14% contre -0.46%). ATTENTION : le test de permutation montre que ~+0.77%/mois vient de la structure des donnees, pas du signal — l'edge attribuable aux regles est ~+1.5%/mois, pas +2.33%. A confirmer avec G8 + permutation sur les 10 paires avant de remplacer PP-ST comme reference."
+    },
+    {
       "fichier": "pine_scripts/strategies/pp_st_btc_4h_v2_ls.pine",
       "statut": "CODEE_PARTIELLEMENT_TESTEE",
       "logique": "V1 + shorts miroir + hard SL optionnel + cooldown",
@@ -212,7 +243,8 @@
         },
         "deflated_sharpe": 0.0
       },
-      "verdict": "Echoue. Cause structurelle : les piliers P1 (proche extreme mensuel) et P2 (biais de tendance) sont directionnellement incompatibles — sur 920 barres en biais long, seules 154 (17%) ont aussi P1 long. Exiger 3/4 quand deux piliers se contredisent -> 3 a 14 trades par fenetre. Le 17/20 in-sample reposait sur des echantillons de cette taille. Le 'bat le B&H 9/10' en 15m est un artefact de fenetre baissiere."
+      "verdict": "Echoue. Cause structurelle : les piliers P1 (proche extreme mensuel) et P2 (biais de tendance) sont directionnellement incompatibles — sur 920 barres en biais long, seules 154 (17%) ont aussi P1 long. Exiger 3/4 quand deux piliers se contredisent -> 3 a 14 trades par fenetre. Le 17/20 in-sample reposait sur des echantillons de cette taille. Le 'bat le B&H 9/10' en 15m est un artefact de fenetre baissiere.",
+      "ptb_entree_testee": "NON APPLICABLE — l'entree PTB de @StoicTA a ete testee (-0.74 pt en crypto 4h) mais le Lens n'a pas un probleme d'entree : ses piliers P1/P2 sont incompatibles (17% de recouvrement), 3-14 trades par fenetre. Changer l'entree ne corrige pas un filtre qui ne laisse rien passer."
     },
     {
       "fichier": "pine_scripts/strategies/stoic_sbs.pine",
@@ -234,6 +266,18 @@
     }
   ],
   "chantiers_ouverts": [
+    {
+      "id": "G11",
+      "titre": "Confirmer le 1-2-3 cassure",
+      "prio": "haute",
+      "detail": "Passer au filtre G8 + permutation sur les 10 paires + comparaison a PP-ST sur fenetres identiques. Si confirme, c'est LUI qui part en paper trading, pas PP-ST."
+    },
+    {
+      "id": "G12",
+      "titre": "Tester le PTB en 5min",
+      "prio": "moyenne",
+      "detail": "Son terrain d'origine (NQ 5min). Savoir si l'echec vient du timeframe ou de la mecanique."
+    },
     {
       "id": "G1",
       "titre": "WF ruban",
@@ -319,6 +363,7 @@
     "note_donnees": "Paire nue (BTCUSDT) -> API Binance, historique complet. Le prefixe BINANCE: route vers le cache TradingView, pas vers l'API.",
     "agents/lens_wf.py": "walk-forward du Lens 4 piliers (echoue)",
     "agents/eligibility.py": "filtre d'eligibilite par symbole, lit UNIQUEMENT l'in-sample. +0.23 pt sur le panier",
-    "agents/rolling_wf.py": "walk-forward glissant multi-fenetres, param trade_from pour isoler chaque fenetre"
+    "agents/rolling_wf.py": "walk-forward glissant multi-fenetres, param trade_from pour isoler chaque fenetre",
+    "agents/ptb_wf.py": "entree PTB @StoicTA vs entree a la cassure, walk-forward + A/B. Le mode 'break' est le meilleur candidat du projet."
   }
 }
