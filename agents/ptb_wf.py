@@ -141,7 +141,8 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
                       - (pos["entry"] + fill) * pos["qty"] * COMMISSION
                 prev = equity
                 equity += pnl
-                trades.append({"pnl": pnl, "pct": pnl / max(prev, 1e-9)})
+                trades.append({"pnl": pnl, "pct": pnl / max(prev, 1e-9),
+                               "r": pnl / max(pos.get("risk_cash", 1e-9), 1e-9)})
                 pos = None
 
         # ── séquence 1-2-3 haussière ────────────────────────────────────────
@@ -160,7 +161,7 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
                         risk = entry - sl
                         if risk > 0:
                             qty = equity * p["risk_pct"] / 100 / risk
-                            pos = {"side": "L", "entry": entry, "qty": qty, "sl": sl,
+                            pos = {"side": "L", "entry": entry, "qty": qty, "sl": sl, "risk_cash": risk * qty,
                                    "t1": entry + p["t1r"] * risk,
                                    "t2": s2 + (hv[i] - s2) * p["fib_ext"],
                                    "t1_hit": False}
@@ -179,7 +180,7 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
                     if risk > 0:
                         qty = equity * p["risk_pct"] / 100 / risk
                         leg = max(stL["s3_hi"] - stL["s2_lo"], risk)
-                        pos = {"side": "L", "entry": entry, "qty": qty, "sl": sl,
+                        pos = {"side": "L", "entry": entry, "qty": qty, "sl": sl, "risk_cash": risk * qty,
                                "t1": entry + p["t1r"] * risk,
                                "t2": stL["s2_lo"] + leg * p["fib_ext"],
                                "t1_hit": False}
@@ -204,7 +205,7 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
                         risk = sl - entry
                         if risk > 0:
                             qty = equity * p["risk_pct"] / 100 / risk
-                            pos = {"side": "S", "entry": entry, "qty": qty, "sl": sl,
+                            pos = {"side": "S", "entry": entry, "qty": qty, "sl": sl, "risk_cash": risk * qty,
                                    "t1": entry - p["t1r"] * risk,
                                    "t2": s2 - (s2 - lo[i]) * p["fib_ext"],
                                    "t1_hit": False}
@@ -222,7 +223,7 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
                     if risk > 0:
                         qty = equity * p["risk_pct"] / 100 / risk
                         leg = max(stS["s2_hi"] - stS["s3_lo"], risk)
-                        pos = {"side": "S", "entry": entry, "qty": qty, "sl": sl,
+                        pos = {"side": "S", "entry": entry, "qty": qty, "sl": sl, "risk_cash": risk * qty,
                                "t1": entry - p["t1r"] * risk,
                                "t2": stS["s2_hi"] - leg * p["fib_ext"],
                                "t1_hit": False}
@@ -249,9 +250,17 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
     roll = eq.cummax()
     rets = pd.Series([t["pct"] for t in trades])
 
+    # Esperance en R — insensible au levier. Le rendement mensuel devient
+    # ininterpretable quand le stop est serre : risquer 1 % avec un stop de
+    # 0,13 % implique un levier x7,7, et le compose explose dans les deux sens.
+    # Le multiple de R, lui, mesure la qualite du signal seule.
+    rs = pd.Series([t.get("r", 0.0) for t in trades])
+
     return {
         "total_trades": len(trades),
         "win_rate_pct": round(len(wins) / len(trades) * 100, 1),
+        "expectancy_r": round(float(rs.mean()), 4),
+        "total_r": round(float(rs.sum()), 1),
         "total_return_pct": round((final / 10000 - 1) * 100, 2),
         "monthly_return_pct": round(monthly, 2),
         "profit_factor": round(gw / gl, 2) if gl > 0 else 999,
