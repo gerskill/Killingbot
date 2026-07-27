@@ -149,6 +149,18 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
     qty = 0.0
 
     start = max(int(p["ema_len"]) + 1, int(p["prd"]) * 2 + 2)
+
+    # `trade_from` : les indicateurs sont calculés sur tout le df (warm-up des
+    # moyennes mobiles), mais aucun trade n'est pris avant cette date. Sert au
+    # walk-forward glissant, pour que le résultat d'une fenêtre ne contienne que
+    # les trades de cette fenêtre — pas ceux de son contexte.
+    tf = p.get("trade_from")
+    if tf is not None:
+        pos_idx = df.index.searchsorted(tf)
+        start = max(start, int(pos_idx))
+        if start >= n - 2:
+            return {"error": "Fenêtre trop courte"}
+
     for i in range(start, n):
         px = cv[i]
         flip_up = trend[i] == 1 and trend[i - 1] == -1
@@ -186,7 +198,9 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
 
     eq = pd.Series(curve)
     final = eq.iloc[-1]
-    span_days = max((df.index[-1] - df.index[0]).days, 1)
+    # Métriques rapportées sur la fenêtre réellement tradée, pas sur tout le df
+    # (qui inclut le warm-up des indicateurs).
+    span_days = max((df.index[-1] - df.index[start]).days, 1)
     n_months = span_days / 30
     monthly = ((final / 10000) ** (1 / n_months) - 1) * 100 if final > 0 else -100.0
 
@@ -198,7 +212,7 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
     rets = pd.Series([t["pct"] for t in trades])
     sharpe = rets.mean() / rets.std() if rets.std() > 0 else 0.0
 
-    bh = (df["Close"].iloc[-1] / df["Close"].iloc[0] - 1) * 100
+    bh = (df["Close"].iloc[-1] / df["Close"].iloc[start] - 1) * 100
 
     return {
         "total_trades": len(trades),

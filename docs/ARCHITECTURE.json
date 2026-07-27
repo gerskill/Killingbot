@@ -9,7 +9,11 @@
     "Un seul script attache au chart TradingView a la fois : empiler 3+ strategies avec request.security declenche 'Internal server study error'.",
     "Tout resultat de backtest est in-sample tant que walk-forward non fait.",
     "Le walk-forward est la porte d'entree, pas la verification finale. Toute strategie candidate passe par agents/stoic_ribbon_wf.py avant d'etre presentee comme exploitable.",
-    "Comparer systematiquement au buy & hold : un systeme long only sur un actif qui a fait x9 peut afficher un gros chiffre sans rien apporter."
+    "Comparer systematiquement au buy & hold : un systeme long only sur un actif qui a fait x9 peut afficher un gros chiffre sans rien apporter.",
+    "Avant de valider un systeme de score multi-piliers : mesurer le taux de declenchement CONJOINT des piliers, pas seulement individuel. Le Lens echouait car P1 et P2 decrivent des situations de marche opposees.",
+    "Walk-forward glissant : isoler chaque fenetre avec trade_from. Sans ca, les trades du contexte de warm-up comptent et le score est gonfle (6/6 fenetres positives au lieu de 5/6).",
+    "Preferer la MEDIANE a la moyenne pour juger un panier : sur PP-ST, moyenne +2.54%/mois contre mediane ~+0.5%/mois. Quelques symboles tirent la moyenne.",
+    "Ne pas filtrer les symboles sur le drawdown in-sample : cela ecarte les actifs volatils, qui en crypto sont ceux qui rapportent (-0.20 pt mesure)."
   ],
   "layers": [
     {
@@ -130,9 +134,22 @@
         "panier_oos_moyen_pct_mois": 0.56,
         "panier_oos_median_pct_mois": 0.35,
         "deflated_sharpe": 0.025,
-        "monte_carlo_stabilite_pct": 100
+        "monte_carlo_stabilite_pct": 100,
+        "glissant_6_fenetres": {
+          "fenetres_positives": "5/6",
+          "moyenne_pct_mois": 2.54,
+          "mediane_des_medianes_pct_mois": 0.5,
+          "ecart_type": 1.8,
+          "alerte": "fenetre la plus recente (2025-02 -> 2026-07) NEGATIVE : -0.46%, 3/9 symboles positifs",
+          "symboles_constants": "BTC 6/6, ETH 5/6 — les seuls au-dessus de 5/6"
+        },
+        "filtre_eligibilite": {
+          "rejette": "DOTUSDT (PF 0.03)",
+          "gain_pct_point": 0.23,
+          "panier_oos_apres_pct_mois": 0.792
+        }
       },
-      "verdict": "SEULE strategie qui survit hors echantillon. Edge reel ~+0.35 a +0.56%/mois (4-7%/an), pas +3.88%. Trois reserves : coupe les gros gagnants (perd -33203% vs B&H sur BNB), aucun garde-fou quand le systeme ne convient pas au symbole (DOT PF 0.03), degradation IS->OOS de -70%."
+      "verdict": "SEULE strategie validee. Attente realiste ~+0.5%/mois (6%/an) sur BTC+ETH avec filtre d'eligibilite, PAS +2947% ni +2.54%/mois (moyenne gonflee par outliers). ALERTE : derniere fenetre glissante negative."
     },
     {
       "fichier": "pine_scripts/strategies/pp_st_btc_4h_v2_ls.pine",
@@ -176,12 +193,26 @@
     },
     {
       "fichier": "pine_scripts/strategies/stoic_lens_pure_v2.pine",
-      "statut": "TESTEE_MULTI_MARCHES",
+      "statut": "ECHOUE_WALK_FORWARD",
       "logique": "Protocole Stoic : HCOM/LCOM + PDH/PDL/PDC + SMA20/200 + Fib, score 4 piliers",
       "sweet_spot": "15m et Daily (l'entre-deux perd)",
       "resultats": "17/20 symboles positifs en Daily, aucun DD > 8.8%",
       "note": "Meilleure generalisation multi-marches. Tuning SPX-optimise casse BTC -> garder les defauts.",
-      "walk_forward": "NON_FAIT — dernier candidat non teste"
+      "walk_forward": {
+        "date": "2026-07-26",
+        "daily": {
+          "oos_positifs": "1/8",
+          "panier_oos_moyen_pct_mois": -0.05,
+          "degradation_mediane_pct": -231
+        },
+        "m15": {
+          "oos_positifs": "7/10",
+          "panier_oos_moyen_pct_mois": -0.12,
+          "monte_carlo_stabilite_pct": 20
+        },
+        "deflated_sharpe": 0.0
+      },
+      "verdict": "Echoue. Cause structurelle : les piliers P1 (proche extreme mensuel) et P2 (biais de tendance) sont directionnellement incompatibles — sur 920 barres en biais long, seules 154 (17%) ont aussi P1 long. Exiger 3/4 quand deux piliers se contredisent -> 3 a 14 trades par fenetre. Le 17/20 in-sample reposait sur des echantillons de cette taille. Le 'bat le B&H 9/10' en 15m est un artefact de fenetre baissiere."
     },
     {
       "fichier": "pine_scripts/strategies/stoic_sbs.pine",
@@ -205,42 +236,51 @@
   "chantiers_ouverts": [
     {
       "id": "G1",
-      "titre": "Walk-forward ruban",
+      "titre": "WF ruban",
       "prio": "fait",
-      "statut": "FAIT",
-      "detail": "Echoue : OOS 3/10, degradation -131%."
+      "statut": "ECHOUE"
     },
     {
       "id": "G1b",
-      "titre": "Walk-forward PP-ST",
+      "titre": "WF PP-ST",
       "prio": "fait",
-      "statut": "FAIT",
-      "detail": "PASSE : OOS 6/10, panier +0.35%/mois median, bat B&H 7/10. Voir backtest/WALK_FORWARD_PPST_2026-07-26.md"
+      "statut": "PASSE"
+    },
+    {
+      "id": "G1c",
+      "titre": "WF Lens",
+      "prio": "fait",
+      "statut": "ECHOUE — piliers P1/P2 incompatibles"
     },
     {
       "id": "G5",
       "titre": "Committer",
       "prio": "fait",
-      "statut": "FAIT",
-      "detail": "164 fichiers commites le 26/07."
-    },
-    {
-      "id": "G1c",
-      "titre": "Walk-forward sur stoic_lens_pure_v2",
-      "prio": "haute",
-      "detail": "Dernier candidat non teste (17/20 Daily in-sample)."
+      "statut": "FAIT"
     },
     {
       "id": "G8",
-      "titre": "Filtre d'eligibilite par symbole",
-      "prio": "moyenne",
-      "detail": "DOT : PF in-sample 0.03, aucun garde-fou. Refuser tout symbole sous un seuil de PF."
+      "titre": "Filtre eligibilite",
+      "prio": "fait",
+      "statut": "FAIT — +0.23 pt, rejette DOT. Critere drawdown teste puis retire (nuisible)."
     },
     {
       "id": "G9",
-      "titre": "Walk-forward glissant",
+      "titre": "WF glissant",
+      "prio": "fait",
+      "statut": "FAIT — 5/6 fenetres positives, derniere NEGATIVE"
+    },
+    {
+      "id": "G10",
+      "titre": "Paper trading BTC+ETH",
+      "prio": "haute",
+      "detail": "Seule etape qui apporte encore de l'information. Confronter les +0.5%/mois au reel."
+    },
+    {
+      "id": "G9b",
+      "titre": "Refaire le glissant dans 3 mois",
       "prio": "moyenne",
-      "detail": "Le split 70/30 est unique. Fenetres successives = plus robuste."
+      "detail": "Si la fenetre 7 est aussi negative, l'hypothese d'erosion de l'edge se confirme."
     },
     {
       "id": "G6",
@@ -250,27 +290,19 @@
     },
     {
       "id": "G3",
-      "titre": "Brancher garch_position_sizer.py",
+      "titre": "Sizing GARCH",
       "prio": "basse",
-      "detail": "Utile seulement apres G1c/G8/G9."
-    },
-    {
-      "id": "G2",
-      "titre": "Grille 40x8",
-      "prio": "suspendue",
-      "detail": "A relancer avec split IS/OOS integre."
+      "detail": "NE PAS brancher avant d'avoir des trades papier reels — optimiser la taille d'un edge non confirme n'a pas de sens."
     },
     {
       "id": "G4",
-      "titre": "ANTHROPIC_API_KEY commentee",
-      "prio": "basse",
-      "detail": "Bloque agents/llm_generator.py."
+      "titre": "ANTHROPIC_API_KEY",
+      "prio": "basse"
     },
     {
       "id": "G7",
       "titre": "Process fantome port 5001",
-      "prio": "basse",
-      "detail": "PID 57999 jamais confirme arrete."
+      "prio": "basse"
     }
   ],
   "pieges_connus": [
@@ -284,6 +316,9 @@
     "agents/validation.py": "walk_forward_split, deflated_sharpe_ratio, monte_carlo_stability",
     "usage": "python agents/stoic_ribbon_wf.py --full --interval 8h --days 720",
     "agents/ppst_wf.py": "port Python de PP-ST + walk-forward + comparaison buy&hold (donnees Binance)",
-    "note_donnees": "Paire nue (BTCUSDT) -> API Binance, historique complet. Le prefixe BINANCE: route vers le cache TradingView, pas vers l'API."
+    "note_donnees": "Paire nue (BTCUSDT) -> API Binance, historique complet. Le prefixe BINANCE: route vers le cache TradingView, pas vers l'API.",
+    "agents/lens_wf.py": "walk-forward du Lens 4 piliers (echoue)",
+    "agents/eligibility.py": "filtre d'eligibilite par symbole, lit UNIQUEMENT l'in-sample. +0.23 pt sur le panier",
+    "agents/rolling_wf.py": "walk-forward glissant multi-fenetres, param trade_from pour isoler chaque fenetre"
   }
 }

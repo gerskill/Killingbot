@@ -106,7 +106,7 @@ footer{margin-top:40px;padding-top:15px;border-top:1px solid var(--line);color:v
     <div class="kpi"><b>18</b><span>scripts Pine</span></div>
     <div class="kpi"><b>31</b><span>modules Python</span></div>
     <div class="kpi"><b class="pos" id="kCommit">0</b><span>non commités</span></div>
-    <div class="kpi"><b class="pos">3</b><span>walk-forward faits</span></div>
+    <div class="kpi"><b class="pos">5</b><span>walk-forward faits</span></div>
   </div>
 </div>
 
@@ -179,7 +179,7 @@ const FLOW2=[
 ];
 const STRATS=[
  {f:"pp_st_btc_4h_final.pine",s:"ok",lbl:"PASSE LE WF",v:2947,r:'<span class="pos">OOS 6/10 · panier +0,35 %/mois</span><br><span class="sub">bat le B&H 7/10 · dégrad. −70 %</span>',n:'<strong>Seule stratégie qui survit hors échantillon.</strong> Mais l\'edge réel est ~+0,35 à +0,56 %/mois (4-7 %/an), pas +3,88 %. Coupe les gros gagnants : perd −33 203 % contre le B&H sur BNB. DOT à exclure (PF 0,03).'},
- {f:"stoic_lens_pure_v2.pine",s:"ok",lbl:"GÉNÉRALISE",v:100,r:'<span class="pos">17/20 symboles positifs</span><br><span class="sub">Daily · aucun DD > 8,8 %</span>',n:"Meilleure robustesse multi-marchés. Sweet spots : 15m et Daily. <strong>Dernier candidat non testé en walk-forward.</strong>"},
+ {f:"stoic_lens_pure_v2.pine",s:"bad",lbl:"ÉCHOUE LE WF",v:-0.05,r:'<span class="neg">OOS 1/8 (Daily) · panier −0,05 %/mois</span><br><span class="sub">15m : MC 20 % stable seulement</span>',n:"Cause structurelle : P1 (près de l\'extrême mensuel) et P2 (biais de tendance) sont incompatibles — 17 % de recouvrement. Exiger 3/4 → 3 à 14 trades par fenêtre. Le 17/20 in-sample était du bruit."},
  {f:"stoic_123_ribbon.pine",s:"bad",lbl:"ÉCHOUE LE WF",v:-131,r:'IS +18,1 % mais <span class="neg">OOS 3/10 positifs</span><br><span class="sub">dégradation médiane −131 % · DSR 0,86</span>',n:'Walk-forward du 26/07 : effondrement out-of-sample sur Daily ET 8h. Monte Carlo 100 % stable → pas du sur-apprentissage de params, mais un edge qui ne persiste pas dans le temps (dépendance au régime).'},
  {f:"pp_st_btc_4h_v2_ls.pine",s:"warn",lbl:"PARTIEL",v:10,r:"SL dur : DD shorts 33 % → 23 %",n:"V1 + shorts miroir. Défaut retenu : SL sur shorts seulement."},
  {f:"stoic_sbs.pine",s:"bad",lbl:"REJETÉE",v:2.3,r:'<span class="num">+2,3 % au mieux (1h)</span>',n:"Séquence SBS mécanisée. Méthode discrétionnaire → perd son edge. Garder comme indicateur visuel."},
@@ -196,12 +196,14 @@ const TODOS=[
  {id:"G5",p:"hi",t:"Committer le travail",d:"164 fichiers commités le 26/07. Vidéo 533 Mo et repo imbriqué exclus du suivi.",done:true},
  {id:"G1",p:"hi",t:"Walk-forward — ruban testé",d:"Fait le 26/07 via <code>agents/stoic_ribbon_wf.py</code>. <strong>Le ruban échoue</strong> : IS 10/10 positifs, OOS 3/10, dégradation médiane −131 %, DSR 0,86. Voir <code>backtest/WALK_FORWARD_2026-07-26.md</code>.",done:true},
  {id:"G1b",p:"hi",t:"Walk-forward PP-ST — passe le test",d:"Fait le 26/07 sur données Binance 4h (2017-2026). <strong>OOS 6/10 positifs, panier +0,35 %/mois médian, bat le B&H 7/10.</strong> Première stratégie validée hors échantillon. Voir <code>backtest/WALK_FORWARD_PPST_2026-07-26.md</code>.",done:true},
- {id:"G8",p:"mid",t:"Filtre d'éligibilité par symbole",d:"DOT affiche un PF in-sample de 0,03 — aucun garde-fou ne le coupe. Refuser automatiquement tout symbole sous un seuil de PF."},
- {id:"G9",p:"mid",t:"Walk-forward glissant",d:"Le split 70/30 est unique. Des fenêtres successives confirmeraient les +0,35 %/mois."},
- {id:"G1c",p:"hi",t:"Walk-forward sur stoic_lens_pure_v2",d:"Meilleur candidat restant sur le critère de généralisation (17/20 Daily). Même traitement à appliquer."},
+ {id:"G8",p:"mid",t:"Filtre d'éligibilité — fait",d:"Rejette DOT (PF 0,03). <strong>+0,23 point</strong> sur le panier OOS. Le critère drawdown a été testé puis retiré : il écartait ADA/LINK/XRP, positifs en OOS.",done:true},
+ {id:"G9",p:"mid",t:"Walk-forward glissant — fait",d:"5/6 fenêtres positives sur 2017-2026. <strong>Alerte : la fenêtre la plus récente (2025-02 → 2026-07) est négative</strong>, 3/9 symboles positifs. BTC 6/6 et ETH 5/6 sont les seuls constants.",done:true},
+ {id:"G10",p:"hi",t:"Paper trading BTC + ETH",d:"Seule étape qui apporte encore de l'information : confronter les +0,5 %/mois au réel. Uniquement BTC et ETH, les deux seuls symboles constants."},
+ {id:"G9b",p:"mid",t:"Refaire le glissant dans 3 mois",d:"Si la fenêtre 7 est également négative, l'hypothèse d'érosion de l'edge se confirme."},
+ {id:"G1c",p:"hi",t:"Walk-forward Lens — échoue",d:"OOS 1/8 en Daily. Piliers P1 et P2 directionnellement incompatibles (17 % de recouvrement) → 3 à 14 trades par fenêtre. Voir <code>backtest/WALK_FORWARD_LENS_2026-07-26.md</code>.",done:true},
  {id:"G2",p:"lo",t:"Grille 40 × 8 — en attente",d:"<strong>Suspendue.</strong> Élargir une recherche in-sample sur un système qui échoue le walk-forward ne produirait que des chiffres non exploitables. À relancer avec le split IS/OOS intégré à la boucle."},
  {id:"G6",p:"mid",t:"Opening Range New York",d:"Visible sur le chart live de @StoicTA, absent de toutes les stratégies. Pourrait sauver les bas timeframes (5m/15m négatifs)."},
- {id:"G3",p:"mid",t:"Brancher le sizing GARCH",d:"Code prêt, testé sur synthétique. Un appel depuis <code>webhook_server_v2.py</code> suffit."},
+ {id:"G3",p:"lo",t:"Sizing GARCH — ne pas brancher maintenant",d:"Optimiser la taille d'un edge non confirmé n'a pas de sens. Attendre les trades papier réels (G10)."},
  {id:"G4",p:"lo",t:"Débloquer ANTHROPIC_API_KEY",d:"Commentée dans <code>.env</code> → bloque <code>agents/llm_generator.py</code>."},
  {id:"G7",p:"lo",t:"Process fantôme port 5001",d:"PID 57999 jamais confirmé arrêté. Vérifier <code>lsof -i :5001</code>."}
 ];
