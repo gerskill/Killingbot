@@ -1,0 +1,234 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// STOIC 1-2-3 — la strategie de @StoicTA, telle qu'il la trade
+// ───────────────────────────────────────────────────────────────────────────
+//   Step 1  impulsion qui inscrit un plus haut / plus bas
+//   Step 2  creux (ou sommet) du repli qui suit
+//   Step 3  cloture au-dela du Step 1 -> direction confirmee
+//   PTB     derniere bougie du repli qui suit le Step 3
+//   Entree  ORDRE STOP arme au-dessus du PTB high (ou sous le PTB low).
+//           L'ordre reste en attente et se remplit quand le prix le traverse :
+//           « buy stop above the PTB high ... when price trades through it,
+//             the Entry triggers » (tweet du 27 juillet 2026).
+//   Stop    derriere le PTB · Cibles 2R puis extension Fib 261.8%
+//
+// NOTE D'IMPLEMENTATION — l'ordre stop est (re)pose a CHAQUE barre tant que la
+// sequence vit. TradingView remplace l'ordre du meme ID, donc le niveau suit le
+// PTB qui se decale pendant le repli. Ne PAS tenter de detecter la traversee en
+// Pine puis d'entrer au marche : remettre l'etat a zero avant d'evaluer la
+// condition d'entree la rend toujours fausse (bug de la premiere version).
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("STOIC 1-2-3", overlay=true, shorttitle="STOIC-123",
+     initial_capital=10000,
+     default_qty_type=strategy.cash,
+     commission_type=strategy.commission.percent, commission_value=0.04,
+     slippage=2, max_bars_back=500, pyramiding=0)
+
+gT="Theme"
+theme=input.string("StoicTA clair","Theme",options=["StoicTA clair","Dark adapte"],group=gT)
+bool dark = theme=="Dark adapte"
+color cBull = dark ? #7fa650 : #b0c080
+color cBear = dark ? #c98f5a : #e0d0a0
+color c50   = dark ? #9fae66 : #707048
+color c200  = dark ? #d6752e : #b06830
+color cCom  = dark ? #8fbf6a : #4a7030
+color cPD   = dark ? #d6a05a : #b06830
+color cOR   = dark ? #b0904a : #c0a060
+
+gS="Sequence 1-2-3"
+impLook  = input.int(5,  "Step 1 — impulsion sur N barres", minval=2, group=gS)
+maxWait  = input.int(20, "Attente max Step 3 -> entree",    minval=3, group=gS)
+useShort = input.bool(true, "Sequences baissieres",         group=gS)
+needRib  = input.bool(true, "Exiger le ruban aligne",       group=gS)
+
+gF="Tendance"
+len1  = input.int(10, "Ruban court",  minval=2, group=gF)
+len2  = input.int(20, "Ruban long",   minval=2, group=gF)
+len50 = input.int(50, "SMA 50",       minval=5, group=gF)
+len200= input.int(200,"SMA 200",      minval=20,group=gF)
+useTrend = input.bool(true, "Trader seulement dans le sens du 200", group=gF)
+
+gR="Risque"
+riskPct  = input.float(1.0,  "Risque par trade (%)", step=0.25, group=gR)
+slBuf    = input.float(0.05, "Marge derriere le PTB (xATR)", step=0.05, group=gR)
+t1R      = input.float(2.0,  "T1 (R)", step=0.5, group=gR)
+fibExt   = input.float(2.618,"T2 — extension Fib", step=0.1, group=gR)
+t1Part   = input.int(50,     "Part sortie a T1 (%)", minval=10, maxval=100, group=gR)
+atrLen   = input.int(14,     "ATR", group=gR)
+
+gL="Niveaux"
+showPD  = input.bool(true, "PDH / PDL / PDC", group=gL)
+showCom = input.bool(true, "HCOM / LCOM",     group=gL)
+showOR  = input.bool(true, "Opening Range",   group=gL)
+sessLDN = input.session("0300-0400", "OR Londres (heure NY)", group=gL)
+sessNY  = input.session("0930-1000", "OR New York (heure NY)", group=gL)
+
+s10  = ta.sma(close, len1)
+s20  = ta.sma(close, len2)
+s50  = ta.sma(close, len50)
+s200 = ta.sma(close, len200)
+atr  = ta.atr(atrLen)
+
+bool ribUp   = s10 > s20
+bool ribDn   = s10 < s20
+bool trendUp = not useTrend or (s50 > s200 and close > s200)
+bool trendDn = not useTrend or (s50 < s200 and close < s200)
+
+// HCOM / LCOM : extremes de CLOTURE JOURNALIERE du mois en cours.
+// Pas « bougie verte », pas le plus haut high : le plus haut CLOSE daily.
+monthExt() =>
+    var float hc = na
+    var float lc = na
+    if ta.change(time("M")) != 0
+        hc := close
+        lc := close
+    else
+        hc := na(hc) ? close : math.max(hc, close)
+        lc := na(lc) ? close : math.min(lc, close)
+    [hc, lc]
+[hcom, lcom] = request.security(syminfo.tickerid, "D", monthExt(), lookahead=barmerge.lookahead_off)
+
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_off)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_off)
+
+inLDN = not na(time(timeframe.period, sessLDN, "America/New_York"))
+inNY  = not na(time(timeframe.period, sessNY,  "America/New_York"))
+var float ldnH=na, var float ldnL=na, var float nyH=na, var float nyL=na
+if ta.change(time("D")) != 0
+    ldnH := na
+    ldnL := na
+    nyH  := na
+    nyL  := na
+if inLDN
+    ldnH := na(ldnH) ? high : math.max(ldnH, high)
+    ldnL := na(ldnL) ? low  : math.min(ldnL, low)
+if inNY
+    nyH := na(nyH) ? high : math.max(nyH, high)
+    nyL := na(nyL) ? low  : math.min(nyL, low)
+
+float hiPrev = ta.highest(high, impLook)[1]
+float loPrev = ta.lowest(low,  impLook)[1]
+
+// ── Sequence haussiere ──────────────────────────────────────────────────────
+var int   Lst   = 0
+var float Ls2   = na
+var float Ls3   = na
+var float LptbH = na
+var float LptbL = na
+var int   Lbar  = 0
+
+bool step3Up = not na(hiPrev) and close > hiPrev and close > open and (not needRib or ribUp) and trendUp
+
+if Lst == 0
+    if step3Up
+        Lst   := 1
+        Ls3   := high
+        Ls2   := na(loPrev) ? low : loPrev
+        LptbH := na
+        LptbL := na
+        Lbar  := bar_index
+else
+    if bar_index - Lbar > maxWait or low < Ls2 or strategy.position_size != 0
+        Lst := 0
+    else if high < high[1]
+        LptbH := high        // le repli continue -> le PTB se decale
+        LptbL := low
+
+// ── Sequence baissiere ──────────────────────────────────────────────────────
+var int   Sst   = 0
+var float Ss2   = na
+var float Ss3   = na
+var float SptbL = na
+var float SptbH = na
+var int   Sbar  = 0
+
+bool step3Dn = useShort and not na(loPrev) and close < loPrev and close < open and (not needRib or ribDn) and trendDn
+
+if Sst == 0
+    if step3Dn
+        Sst   := 1
+        Ss3   := low
+        Ss2   := na(hiPrev) ? high : hiPrev
+        SptbL := na
+        SptbH := na
+        Sbar  := bar_index
+else
+    if bar_index - Sbar > maxWait or high > Ss2 or strategy.position_size != 0
+        Sst := 0
+    else if low > low[1]
+        SptbL := low
+        SptbH := high
+
+// ── Ordres stop armes ───────────────────────────────────────────────────────
+bool armLong  = Lst == 1 and not na(LptbH) and not na(LptbL) and strategy.position_size == 0
+bool armShort = Sst == 1 and not na(SptbL) and not na(SptbH) and strategy.position_size == 0
+
+if armLong
+    float sl   = LptbL - slBuf * atr
+    float risk = LptbH - sl
+    if risk > 0
+        float qty = strategy.equity * riskPct / 100 / risk
+        float leg = math.max(Ls3 - Ls2, risk)
+        strategy.entry("L", strategy.long, qty=qty, stop=LptbH,
+             alert_message='{"setup":"STOIC123","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+        strategy.exit("L-T1", "L", qty_percent=t1Part, stop=sl, limit=LptbH + t1R * risk)
+        strategy.exit("L-T2", "L",                     stop=sl, limit=Ls2 + leg * fibExt)
+else if strategy.position_size == 0
+    strategy.cancel("L")
+
+if armShort
+    float sl   = SptbH + slBuf * atr
+    float risk = sl - SptbL
+    if risk > 0
+        float qty = strategy.equity * riskPct / 100 / risk
+        float leg = math.max(Ss2 - Ss3, risk)
+        strategy.entry("S", strategy.short, qty=qty, stop=SptbL,
+             alert_message='{"setup":"STOIC123","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+        strategy.exit("S-T1", "S", qty_percent=t1Part, stop=sl, limit=SptbL - t1R * risk)
+        strategy.exit("S-T2", "S",                     stop=sl, limit=Ss2 - leg * fibExt)
+else if strategy.position_size == 0
+    strategy.cancel("S")
+
+// ── Affichage ───────────────────────────────────────────────────────────────
+pa = plot(s10, "SMA 10", color=color.new(ribUp ? cBull : cBear, 100))
+pb = plot(s20, "SMA 20", color=color.new(ribUp ? cBull : cBear, 100))
+fill(pa, pb, color=color.new(ribUp ? cBull : cBear, dark ? 80 : 60), title="Ruban 10/20")
+plot(s50,  "SMA 50",  color=c50,  linewidth=2)
+plot(s200, "SMA 200", color=c200, linewidth=2, style=plot.style_circles)
+
+plot(showCom ? hcom : na, "HCOM", color=color.new(cCom, 0), style=plot.style_linebr, linewidth=2)
+plot(showCom ? lcom : na, "LCOM", color=color.new(cCom, 0), style=plot.style_linebr, linewidth=2)
+plot(showPD  ? pdh  : na, "PDH",  color=color.new(cPD, 35), style=plot.style_linebr)
+plot(showPD  ? pdl  : na, "PDL",  color=color.new(cPD, 35), style=plot.style_linebr)
+plot(showPD  ? pdc  : na, "PDC",  color=color.new(cPD, 60), style=plot.style_linebr)
+plot(showOR and not na(nyH)  ? nyH  : na, "NY OR H",  color=color.new(cOR, 20), style=plot.style_linebr)
+plot(showOR and not na(nyL)  ? nyL  : na, "NY OR L",  color=color.new(cOR, 20), style=plot.style_linebr)
+plot(showOR and not na(ldnH) ? ldnH : na, "LDN OR H", color=color.new(cOR, 55), style=plot.style_linebr)
+plot(showOR and not na(ldnL) ? ldnL : na, "LDN OR L", color=color.new(cOR, 55), style=plot.style_linebr)
+
+bgcolor(showOR and inNY  ? color.new(cOR, 90) : na, title="Session NY OR")
+bgcolor(showOR and inLDN ? color.new(cOR, 93) : na, title="Session Londres OR")
+barcolor(close >= open ? cBull : cBear)
+
+plot(armLong  ? LptbH : na, "Stop long arme",  color=color.new(cBull, 0), style=plot.style_linebr, linewidth=2)
+plot(armShort ? SptbL : na, "Stop short arme", color=color.new(cBear, 0), style=plot.style_linebr, linewidth=2)
+
+plotshape(step3Up, "Step 3 haussier", shape.triangleup,   location.belowbar, color.new(cBull, 30), size=size.tiny)
+plotshape(step3Dn, "Step 3 baissier", shape.triangledown, location.abovebar, color.new(cBear, 30), size=size.tiny)
+
+var table tb = table.new(position.top_right, 2, 6, border_width=1)
+if barstate.islast
+    table.cell(tb, 0, 0, "STOIC 1-2-3", text_color=color.white, bgcolor=color.new(color.black, 15))
+    table.cell(tb, 1, 0, trendUp ? "HAUSSIER" : trendDn ? "BAISSIER" : "NEUTRE",
+         text_color=color.white, bgcolor=trendUp ? color.new(c50, 20) : trendDn ? color.new(c200, 20) : color.new(color.gray, 35))
+    table.cell(tb, 0, 1, "Sequence")
+    table.cell(tb, 1, 1, armLong ? "long : stop arme" : armShort ? "short : stop arme" : Lst==1 or Sst==1 ? "attente repli" : "aucune")
+    table.cell(tb, 0, 2, "Niveau arme")
+    table.cell(tb, 1, 2, armLong ? str.tostring(LptbH, format.mintick) : armShort ? str.tostring(SptbL, format.mintick) : "—")
+    table.cell(tb, 0, 3, "HCOM / LCOM")
+    table.cell(tb, 1, 3, str.tostring(hcom, format.mintick) + " / " + str.tostring(lcom, format.mintick))
+    table.cell(tb, 0, 4, "PDH / PDL")
+    table.cell(tb, 1, 4, str.tostring(pdh, format.mintick) + " / " + str.tostring(pdl, format.mintick))
+    table.cell(tb, 0, 5, "NY OR H/L")
+    table.cell(tb, 1, 5, (na(nyH) ? "—" : str.tostring(nyH, format.mintick)) + " / " + (na(nyL) ? "—" : str.tostring(nyL, format.mintick)))
