@@ -99,8 +99,37 @@ Or son instrument n'a rien à voir :
 **40 à 100 fois moins cher.** Le PTB est conçu pour ce régime de frais : un stop
 d'une seule bougie n'a de sens que si les frais sont négligeables devant.
 
+### La preuve chiffrée
+
+Le test décisif : mêmes règles, mêmes données, **seuls les frais changent**.
+Mesuré en espérance R, insensible au levier.
+
+| Régime | Entrée | Espérance | Symboles positifs | Réussite |
+|---|---|---|---|---|
+| Crypto 4h · frais crypto | PTB | +0,1164 R | 8/10 | 18,4 % |
+| Crypto 4h · frais crypto | cassure | **+0,4582 R** | 10/10 | 38,8 % |
+| Crypto 5m · frais crypto | **PTB** | **−0,5134 R** | **0/10** | 17,6 % |
+| Crypto 5m · frais crypto | cassure | +0,0116 R | 6/10 | 36,0 % |
+| Crypto 5m · **frais futures** | **PTB** | **+0,3269 R** | **10/10** | 18,3 % |
+| Crypto 5m · **frais futures** | cassure | +0,4771 R | 10/10 | 36,9 % |
+
+**Le PTB passe de −0,51 R à +0,33 R sur les mêmes données, uniquement parce que
+les frais baissent.** Écart : +0,84 R.
+
+Ce chiffre était prévisible. En 5 min, le coût aller-retour vaut 0,93 % de
+l'équité pour 1 % risqué, soit **0,93 R de frais par trade**. Retirer les frais
+devait rendre ~0,9 R. On observe +0,84 R. Le modèle explicatif est confirmé.
+
 **Conclusion** : appliquer le PTB en crypto est une erreur de transposition, pas
-un défaut de sa méthode. Rien de ce qui a été mesuré ne condamne son usage sur NQ.
+un défaut de sa méthode. Sur un instrument à frais faibles, sa mécanique est
+solidement positive — 10 symboles sur 10.
+
+**Nuance à ne pas effacer** : même à frais futures, l'entrée à la cassure garde
+une espérance supérieure (+0,4771 contre +0,3269 R). Mais cette comparaison porte
+sur des **prix crypto avec des frais futures** — un hybride synthétique. La
+structure de prix du NQ (ouverture de session, retours à la moyenne autour de
+l'open) n'est pas celle de la crypto. Cette hiérarchie ne peut pas être
+transposée telle quelle à son instrument : elle reste à mesurer sur NQ.
 
 ---
 
