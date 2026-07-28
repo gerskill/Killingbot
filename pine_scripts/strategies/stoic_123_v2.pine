@@ -1,0 +1,288 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// STOIC 1-2-3 v2 — systeme de @StoicTA + garde-fou de viabilite
+// ───────────────────────────────────────────────────────────────────────────
+// SA REGLE, inchangee (tweet du 27 juillet 2026) :
+//   Step 1  impulsion qui inscrit un plus haut / plus bas
+//   Step 2  creux (ou sommet) du repli
+//   Step 3  cloture au-dela du Step 1 -> direction confirmee
+//   PTB     derniere bougie du repli
+//   Entree  ORDRE STOP au-dessus du PTB high / sous le PTB low
+//   Stop    derriere le PTB · Cibles 2R puis extension Fib 261.8%
+//
+// CE QUE v2 AJOUTE — et pourquoi
+// ───────────────────────────────────────────────────────────────────────────
+// Mesure du 27-28 juillet 2026 (10 paires crypto, walk-forward 70/30) :
+//
+//   crypto 4h : amplitude mediane d'une bougie 1.444% -> stop PTB confortable
+//               cout aller-retour 0.08% de l'equite par trade -> negligeable
+//   crypto 5m : amplitude mediane 0.129% -> stop PTB minuscule
+//               cout aller-retour 0.93% de l'equite par trade
+//               ... alors qu'on ne risque que 1%. Les frais mangent le budget.
+//
+// Sur NQ futures (son instrument), le cout aller-retour vaut ~0.003% du
+// notionnel contre 0.120% en crypto : 40x moins cher. Le PTB est concu POUR
+// ce regime de frais. Applique en crypto, il perd — pas parce que la lecture
+// est fausse, mais parce qu'un stop d'une bougie n'a de sens que si les frais
+// sont negligeables devant.
+//
+// v2 rend ce garde-fou explicite : la strategie REFUSE le trade quand la
+// distance de stop est trop faible face aux frais, au lieu de saigner en
+// silence. Et elle propose un repli documente (stop sous Step 2) pour les
+// marches chers.
+//
+// Reglage :
+//   NQ / MNQ 5min  -> entree "PTB",       frais ~0.005%  (son usage)
+//   Crypto 4h+     -> entree "Step 2",    frais ~0.120%  (mesure superieur)
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("STOIC 1-2-3 v2", overlay=true, shorttitle="STOIC-123v2",
+     initial_capital=10000,
+     default_qty_type=strategy.cash,
+     commission_type=strategy.commission.percent, commission_value=0.04,
+     slippage=2, max_bars_back=500, pyramiding=0)
+
+// ── Mode d'entree + garde-fou de viabilite ──────────────────────────────────
+gE="Entree"
+entryMode = input.string("PTB (StoicTA)", "Mecanique d'entree",
+     options=["PTB (StoicTA)", "Step 2 (marches chers)"], group=gE,
+     tooltip="PTB : stop derriere la derniere bougie de repli — sa regle, concue pour les futures. " +
+             "Step 2 : stop sous le creux de la sequence — mesure superieur en crypto (frais 40x plus eleves).")
+costRT   = input.float(0.12, "Cout aller-retour estime (% du notionnel)", step=0.005, minval=0.0, group=gE,
+     tooltip="NQ/MNQ ~0.005 · crypto spot ~0.12 · CFD actions ~0.10. Sert au garde-fou.")
+minCostRatio = input.float(6.0, "Distance de stop minimale / cout", step=0.5, minval=1.0, group=gE,
+     tooltip="Refuse le trade si la distance de stop vaut moins de N fois le cout aller-retour. " +
+             "A 6, les frais representent au plus ~17% du risque.")
+
+gS="Sequence 1-2-3"
+impLook  = input.int(5,  "Step 1 — impulsion sur N barres", minval=2, group=gS)
+maxWait  = input.int(20, "Attente max Step 3 -> entree",    minval=3, group=gS)
+useShort = input.bool(true, "Sequences baissieres",         group=gS)
+needRib  = input.bool(true, "Exiger le ruban aligne",       group=gS)
+
+gF="Tendance"
+len1  = input.int(10, "Ruban court",  minval=2, group=gF)
+len2  = input.int(20, "Ruban long",   minval=2, group=gF)
+len50 = input.int(50, "SMA 50",       minval=5, group=gF)
+len200= input.int(200,"SMA 200",      minval=20,group=gF)
+useTrend = input.bool(true, "Trader dans le sens du 200", group=gF)
+
+gR="Risque"
+riskPct  = input.float(1.0,  "Risque par trade (%)", step=0.25, group=gR)
+slBuf    = input.float(0.05, "Marge derriere le stop (xATR)", step=0.05, group=gR)
+t1R      = input.float(2.0,  "T1 (R)", step=0.5, group=gR)
+fibExt   = input.float(2.618,"T2 — extension Fib", step=0.1, group=gR)
+t1Part   = input.int(50,     "Part sortie a T1 (%)", minval=10, maxval=100, group=gR)
+atrLen   = input.int(14,     "ATR", group=gR)
+
+gL="Niveaux"
+showPD  = input.bool(true, "PDH / PDL / PDC", group=gL)
+showCom = input.bool(true, "HCOM / LCOM",     group=gL)
+showOR  = input.bool(true, "Opening Range",   group=gL)
+sessLDN = input.session("0300-0400", "OR Londres (heure NY)", group=gL)
+sessNY  = input.session("0930-1000", "OR New York (heure NY)", group=gL)
+
+gT="Theme"
+theme=input.string("StoicTA clair","Theme",options=["StoicTA clair","Dark adapte"],group=gT)
+bool dark = theme=="Dark adapte"
+color cBull = dark ? #7fa650 : #b0c080
+color cBear = dark ? #c98f5a : #e0d0a0
+color c50   = dark ? #9fae66 : #707048
+color c200  = dark ? #d6752e : #b06830
+color cCom  = dark ? #8fbf6a : #4a7030
+color cPD   = dark ? #d6a05a : #b06830
+color cOR   = dark ? #b0904a : #c0a060
+color cWarn = #c0603a
+
+bool usePTB = entryMode == "PTB (StoicTA)"
+
+// ── Moyennes ────────────────────────────────────────────────────────────────
+s10  = ta.sma(close, len1)
+s20  = ta.sma(close, len2)
+s50  = ta.sma(close, len50)
+s200 = ta.sma(close, len200)
+atr  = ta.atr(atrLen)
+
+bool ribUp   = s10 > s20
+bool ribDn   = s10 < s20
+bool trendUp = not useTrend or (s50 > s200 and close > s200)
+bool trendDn = not useTrend or (s50 < s200 and close < s200)
+
+// ── HCOM / LCOM : extremes de CLOTURE JOURNALIERE du mois ───────────────────
+monthExt() =>
+    var float hc = na
+    var float lc = na
+    if ta.change(time("M")) != 0
+        hc := close
+        lc := close
+    else
+        hc := na(hc) ? close : math.max(hc, close)
+        lc := na(lc) ? close : math.min(lc, close)
+    [hc, lc]
+[hcom, lcom] = request.security(syminfo.tickerid, "D", monthExt(), lookahead=barmerge.lookahead_off)
+
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_off)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_off)
+
+inLDN = not na(time(timeframe.period, sessLDN, "America/New_York"))
+inNY  = not na(time(timeframe.period, sessNY,  "America/New_York"))
+var float ldnH=na, var float ldnL=na, var float nyH=na, var float nyL=na
+if ta.change(time("D")) != 0
+    ldnH := na
+    ldnL := na
+    nyH  := na
+    nyL  := na
+if inLDN
+    ldnH := na(ldnH) ? high : math.max(ldnH, high)
+    ldnL := na(ldnL) ? low  : math.min(ldnL, low)
+if inNY
+    nyH := na(nyH) ? high : math.max(nyH, high)
+    nyL := na(nyL) ? low  : math.min(nyL, low)
+
+float hiPrev = ta.highest(high, impLook)[1]
+float loPrev = ta.lowest(low,  impLook)[1]
+
+// ── Sequence haussiere ──────────────────────────────────────────────────────
+var int   Lst   = 0
+var float Ls2   = na
+var float Ls3   = na
+var float LptbH = na
+var float LptbL = na
+var int   Lbar  = 0
+
+bool step3Up = not na(hiPrev) and close > hiPrev and close > open and (not needRib or ribUp) and trendUp
+
+if Lst == 0
+    if step3Up
+        Lst   := 1
+        Ls3   := high
+        Ls2   := na(loPrev) ? low : loPrev
+        LptbH := na
+        LptbL := na
+        Lbar  := bar_index
+else
+    if bar_index - Lbar > maxWait or low < Ls2 or strategy.position_size != 0
+        Lst := 0
+    else if high < high[1]
+        LptbH := high
+        LptbL := low
+
+// ── Sequence baissiere ──────────────────────────────────────────────────────
+var int   Sst   = 0
+var float Ss2   = na
+var float Ss3   = na
+var float SptbL = na
+var float SptbH = na
+var int   Sbar  = 0
+
+bool step3Dn = useShort and not na(loPrev) and close < loPrev and close < open and (not needRib or ribDn) and trendDn
+
+if Sst == 0
+    if step3Dn
+        Sst   := 1
+        Ss3   := low
+        Ss2   := na(hiPrev) ? high : hiPrev
+        SptbL := na
+        SptbH := na
+        Sbar  := bar_index
+else
+    if bar_index - Sbar > maxWait or high > Ss2 or strategy.position_size != 0
+        Sst := 0
+    else if low > low[1]
+        SptbL := low
+        SptbH := high
+
+// ── Niveaux d'entree et de stop selon la mecanique choisie ──────────────────
+// PTB    : entree au-dessus du PTB high, stop sous le PTB low      (sa regle)
+// Step 2 : entree au-dessus du PTB high, stop sous le creux Step 2 (repli mesure)
+float LentryLvl = LptbH
+float LstopLvl  = usePTB ? LptbL - slBuf * atr : Ls2 - slBuf * atr
+float SentryLvl = SptbL
+float SstopLvl  = usePTB ? SptbH + slBuf * atr : Ss2 + slBuf * atr
+
+// ── Garde-fou : la distance de stop couvre-t-elle les frais ? ───────────────
+// Refuse le trade si stop < minCostRatio x cout aller-retour. C'est exactement
+// ce qui faisait saigner le PTB en crypto 5m sans que rien ne l'arrete.
+float costAbs = close * costRT / 100.0
+float Lrisk   = na(LentryLvl) or na(LstopLvl) ? na : LentryLvl - LstopLvl
+float Srisk   = na(SentryLvl) or na(SstopLvl) ? na : SstopLvl - SentryLvl
+bool  LcostOK = not na(Lrisk) and Lrisk > 0 and Lrisk >= minCostRatio * costAbs
+bool  ScostOK = not na(Srisk) and Srisk > 0 and Srisk >= minCostRatio * costAbs
+bool  Lrejete = Lst == 1 and not na(Lrisk) and Lrisk > 0 and not LcostOK
+bool  Srejete = Sst == 1 and not na(Srisk) and Srisk > 0 and not ScostOK
+
+bool armLong  = Lst == 1 and not na(LentryLvl) and LcostOK and strategy.position_size == 0
+bool armShort = Sst == 1 and not na(SentryLvl) and ScostOK and strategy.position_size == 0
+
+// ── Ordres stop armes ───────────────────────────────────────────────────────
+if armLong
+    float qty = strategy.equity * riskPct / 100 / Lrisk
+    float leg = math.max(Ls3 - Ls2, Lrisk)
+    strategy.entry("L", strategy.long, qty=qty, stop=LentryLvl,
+         alert_message='{"setup":"STOIC123","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+    strategy.exit("L-T1", "L", qty_percent=t1Part, stop=LstopLvl, limit=LentryLvl + t1R * Lrisk)
+    strategy.exit("L-T2", "L",                     stop=LstopLvl, limit=Ls2 + leg * fibExt)
+else if strategy.position_size == 0
+    strategy.cancel("L")
+
+if armShort
+    float qty = strategy.equity * riskPct / 100 / Srisk
+    float leg = math.max(Ss2 - Ss3, Srisk)
+    strategy.entry("S", strategy.short, qty=qty, stop=SentryLvl,
+         alert_message='{"setup":"STOIC123","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
+    strategy.exit("S-T1", "S", qty_percent=t1Part, stop=SstopLvl, limit=SentryLvl - t1R * Srisk)
+    strategy.exit("S-T2", "S",                     stop=SstopLvl, limit=Ss2 - leg * fibExt)
+else if strategy.position_size == 0
+    strategy.cancel("S")
+
+// ── Affichage ───────────────────────────────────────────────────────────────
+pa = plot(s10, "SMA 10", color=color.new(ribUp ? cBull : cBear, 100))
+pb = plot(s20, "SMA 20", color=color.new(ribUp ? cBull : cBear, 100))
+fill(pa, pb, color=color.new(ribUp ? cBull : cBear, dark ? 80 : 60), title="Ruban 10/20")
+plot(s50,  "SMA 50",  color=c50,  linewidth=2)
+plot(s200, "SMA 200", color=c200, linewidth=2, style=plot.style_circles)
+
+plot(showCom ? hcom : na, "HCOM", color=color.new(cCom, 0), style=plot.style_linebr, linewidth=2)
+plot(showCom ? lcom : na, "LCOM", color=color.new(cCom, 0), style=plot.style_linebr, linewidth=2)
+plot(showPD  ? pdh  : na, "PDH",  color=color.new(cPD, 35), style=plot.style_linebr)
+plot(showPD  ? pdl  : na, "PDL",  color=color.new(cPD, 35), style=plot.style_linebr)
+plot(showPD  ? pdc  : na, "PDC",  color=color.new(cPD, 60), style=plot.style_linebr)
+plot(showOR and not na(nyH)  ? nyH  : na, "NY OR H",  color=color.new(cOR, 20), style=plot.style_linebr)
+plot(showOR and not na(nyL)  ? nyL  : na, "NY OR L",  color=color.new(cOR, 20), style=plot.style_linebr)
+plot(showOR and not na(ldnH) ? ldnH : na, "LDN OR H", color=color.new(cOR, 55), style=plot.style_linebr)
+plot(showOR and not na(ldnL) ? ldnL : na, "LDN OR L", color=color.new(cOR, 55), style=plot.style_linebr)
+
+bgcolor(showOR and inNY  ? color.new(cOR, 90) : na, title="Session NY OR")
+bgcolor(showOR and inLDN ? color.new(cOR, 93) : na, title="Session Londres OR")
+bgcolor(Lrejete or Srejete ? color.new(cWarn, 90) : na, title="Trade refuse — frais trop lourds")
+barcolor(close >= open ? cBull : cBear)
+
+plot(armLong  ? LentryLvl : na, "Entree long armee",  color=color.new(cBull, 0), style=plot.style_linebr, linewidth=2)
+plot(armLong  ? LstopLvl  : na, "Stop long",          color=color.new(cWarn, 45), style=plot.style_linebr)
+plot(armShort ? SentryLvl : na, "Entree short armee", color=color.new(cBear, 0), style=plot.style_linebr, linewidth=2)
+plot(armShort ? SstopLvl  : na, "Stop short",         color=color.new(cWarn, 45), style=plot.style_linebr)
+
+plotshape(step3Up, "Step 3 haussier", shape.triangleup,   location.belowbar, color.new(cBull, 30), size=size.tiny)
+plotshape(step3Dn, "Step 3 baissier", shape.triangledown, location.abovebar, color.new(cBear, 30), size=size.tiny)
+plotshape(Lrejete or Srejete, "Refuse", shape.xcross, location.abovebar, color.new(cWarn, 20), size=size.tiny)
+
+// ── Tableau ─────────────────────────────────────────────────────────────────
+float ratioNow = na(Lrisk) ? (na(Srisk) ? na : Srisk / costAbs) : Lrisk / costAbs
+var table tb = table.new(position.top_right, 2, 7, border_width=1)
+if barstate.islast
+    table.cell(tb, 0, 0, "STOIC 1-2-3 v2", text_color=color.white, bgcolor=color.new(color.black, 15))
+    table.cell(tb, 1, 0, trendUp ? "HAUSSIER" : trendDn ? "BAISSIER" : "NEUTRE",
+         text_color=color.white, bgcolor=trendUp ? color.new(c50, 20) : trendDn ? color.new(c200, 20) : color.new(color.gray, 35))
+    table.cell(tb, 0, 1, "Entree")
+    table.cell(tb, 1, 1, usePTB ? "PTB" : "Step 2")
+    table.cell(tb, 0, 2, "Sequence")
+    table.cell(tb, 1, 2, armLong ? "long : armee" : armShort ? "short : armee" : Lrejete or Srejete ? "REFUSEE (frais)" : Lst==1 or Sst==1 ? "attente repli" : "aucune")
+    table.cell(tb, 0, 3, "Stop / cout")
+    table.cell(tb, 1, 3, na(ratioNow) ? "—" : str.tostring(ratioNow, "#.#") + "x  (min " + str.tostring(minCostRatio, "#.#") + ")",
+         bgcolor = na(ratioNow) ? na : ratioNow < minCostRatio ? color.new(cWarn, 55) : color.new(c50, 70))
+    table.cell(tb, 0, 4, "Niveau arme")
+    table.cell(tb, 1, 4, armLong ? str.tostring(LentryLvl, format.mintick) : armShort ? str.tostring(SentryLvl, format.mintick) : "—")
+    table.cell(tb, 0, 5, "HCOM / LCOM")
+    table.cell(tb, 1, 5, str.tostring(hcom, format.mintick) + " / " + str.tostring(lcom, format.mintick))
+    table.cell(tb, 0, 6, "PDH / PDL")
+    table.cell(tb, 1, 6, str.tostring(pdh, format.mintick) + " / " + str.tostring(pdl, format.mintick))
