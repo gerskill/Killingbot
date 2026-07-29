@@ -215,8 +215,15 @@ bool armLong  = Lst == 1 and not na(LentryLvl) and LcostOK and strategy.position
 bool armShort = Sst == 1 and not na(SentryLvl) and ScostOK and strategy.position_size == 0
 
 // ── Ordres stop armes ───────────────────────────────────────────────────────
+// Dimensionnement independant de l'instrument.
+// `Lrisk` est exprime en POINTS de cotation. Le convertir en monnaie du compte
+// exige le multiplicateur du contrat : 1 point vaut 20 $ sur NQ, 2 $ sur MNQ,
+// 1 $ en crypto spot. Sans `syminfo.pointvalue`, la quantite est surevaluee
+// d'un facteur 20 sur NQ — l'ordre depasse la marge et n'est jamais rempli.
+float ptVal = math.max(syminfo.pointvalue, 1e-9)
+
 if armLong
-    float qty = strategy.equity * riskPct / 100 / Lrisk
+    float qty = strategy.equity * riskPct / 100 / (Lrisk * ptVal)
     float leg = math.max(Ls3 - Ls2, Lrisk)
     strategy.entry("L", strategy.long, qty=qty, stop=LentryLvl,
          alert_message='{"setup":"STOIC123","dir":"LONG","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
@@ -226,7 +233,7 @@ else if strategy.position_size == 0
     strategy.cancel("L")
 
 if armShort
-    float qty = strategy.equity * riskPct / 100 / Srisk
+    float qty = strategy.equity * riskPct / 100 / (Srisk * ptVal)
     float leg = math.max(Ss2 - Ss3, Srisk)
     strategy.entry("S", strategy.short, qty=qty, stop=SentryLvl,
          alert_message='{"setup":"STOIC123","dir":"SHORT","ticker":"{{ticker}}","tf":"{{interval}}","price":"{{close}}"}')
