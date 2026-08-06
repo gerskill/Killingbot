@@ -159,6 +159,7 @@ def monte_carlo_stability(backtest_fn, df_1h: pd.DataFrame, params: dict,
     ]
 
     results = []
+    n_failures = 0
     for _ in range(n_sims):
         p = copy.deepcopy(params)
         for k in numeric_keys:
@@ -167,9 +168,19 @@ def monte_carlo_stability(backtest_fn, df_1h: pd.DataFrame, params: dict,
         r = backtest_fn(df_1h, p)
         if "error" not in r:
             results.append(r.get("monthly_return_pct", 0))
+        else:
+            n_failures += 1
 
     if not results:
-        return {"error": "Aucune simulation valide"}
+        return {"error": f"Aucune simulation valide ({n_failures}/{n_sims} échouées)",
+                "n_failures": n_failures, "n_sims": n_sims}
+
+    if n_failures / n_sims > 0.5:
+        return {
+            "error": (f"Trop de simulations échouées ({n_failures}/{n_sims}) — "
+                      "stratégie fragile ou données insuffisantes pour le G5"),
+            "n_failures": n_failures, "n_sims": n_sims,
+        }
 
     stable = [r for r in results if baseline_monthly <= 0 or r >= 0.5 * baseline_monthly]
     return {
@@ -178,4 +189,5 @@ def monte_carlo_stability(backtest_fn, df_1h: pd.DataFrame, params: dict,
         "mc_std_pct": round(float(pd.Series(results).std()), 2),
         "mc_stability_pct": round(len(stable) / len(results) * 100, 1),
         "n_sims": len(results),
+        "n_failures": n_failures,
     }

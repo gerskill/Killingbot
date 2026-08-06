@@ -18,6 +18,9 @@ Démarrage :
 Exposer via ngrok :
     ngrok http 5001
 """
+import hmac
+import os
+import re
 import sys
 import asyncio
 import subprocess
@@ -26,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 # Ajouter le répertoire parent au path
@@ -34,6 +37,23 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.queue import signal_queue
 from sidecars import signal_filter, risk_manager, journal
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTH — token identique au webhook_server.py v1 (URL query param)
+# TradingView ne supporte pas Authorization headers dans les alertes.
+# 404 plutôt que 403 : indiscernable d'une route inexistante pour un scanner.
+# ─────────────────────────────────────────────────────────────────────────────
+
+WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
+
+
+async def verify_token(request: Request) -> None:
+    if not WEBHOOK_TOKEN:
+        return  # dev mode — pas de token configuré
+    token = request.query_params.get("token", "")
+    if not hmac.compare_digest(token, WEBHOOK_TOKEN):
+        print(f"[AUTH]   jeton invalide {request.url.path}", file=sys.stderr)
+        raise HTTPException(status_code=404)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WORKER — traitement async (équivalent SQS worker du vidéo)
@@ -136,7 +156,7 @@ app = FastAPI(title="Killingbot Webhook Server v2", lifespan=lifespan)
 
 
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(request: Request, _: None = Depends(verify_token)):
     """
     Reçoit alerte TradingView, enqueue, répond immédiatement (~5ms).
     Le worker traite en arrière-plan.
@@ -150,7 +170,10 @@ async def webhook(request: Request):
     if not payload:
         return JSONResponse({"status": "error", "msg": "empty payload"}, status_code=400)
 
-    task_id = signal_queue.enqueue_nowait("signal", payload)
+    try:
+        task_id = signal_queue.enqueue_nowait("signal", payload)
+    except asyncio.QueueFull:
+        return JSONResponse({"status": "error", "msg": "queue pleine — réessayer"}, status_code=503)
     return JSONResponse({"status": "queued", "task_id": task_id, "queue_size": signal_queue.size})
 
 
@@ -169,18 +192,23 @@ async def health():
 
 
 @app.get("/signals")
-async def signals():
+async def signals(_: None = Depends(verify_token)):
     return journal.recent_signals(20)
 
 
 @app.post("/sovereign/generate")
-async def sovereign_generate(request: Request):
+async def sovereign_generate(request: Request, _: None = Depends(verify_token)):
     """Génère un script Pine depuis le context courant (Sovereign endpoint)."""
     body = await request.json()
     from sovereign.engine import PineEngine
     engine = PineEngine()
     title = body.get("title", "KB_SOVEREIGN")
-    fname = body.get("filename") or f"{title.lower()}.pine"
+    raw_fname = body.get("filename") or f"{title.lower()}.pine"
+    # Sanitize: strip path separators, allow only safe chars, force .pine extension
+    fname = Path(raw_fname).name
+    fname = re.sub(r"[^\w\-.]", "_", fname)
+    if not fname.endswith(".pine"):
+        fname = fname.rsplit(".", 1)[0] + ".pine"
     path = engine.generate(
         title=title,
         use_rsi=body.get("use_rsi", False),
@@ -203,4 +231,4 @@ if __name__ == "__main__":
 ║  POST  /sovereign/generate   → génère Pine depuis ctx    ║
 ╚═══════════════════════════════════════════════════════════╝
 """)
-    uvicorn.run(app, host="0.0.0.0", port=5001, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=5001, log_level="info")

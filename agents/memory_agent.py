@@ -30,13 +30,19 @@ class MemoryAgent:
 
     def _load(self):
         if MEMORY_FILE.exists():
-            with open(MEMORY_FILE) as f:
-                return json.load(f)
+            try:
+                with open(MEMORY_FILE) as f:
+                    return json.load(f)
+            except json.JSONDecodeError as e:
+                corrupt = MEMORY_FILE.with_suffix(".json.corrupt")
+                MEMORY_FILE.rename(corrupt)
+                print(f"[MEMORY] Fichier corrompu → {corrupt} ({e})", file=sys.stderr)
         return {"results": [], "best": None, "explored": [], "session": 0}
 
     def _save(self):
-        with open(MEMORY_FILE, "w") as f:
-            json.dump(self.memory, f, indent=2)
+        tmp = MEMORY_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.memory, indent=2), encoding="utf-8")
+        tmp.replace(MEMORY_FILE)
 
     def _log(self, msg: str):
         with open(LOG_FILE, "a") as f:

@@ -237,12 +237,17 @@ def _close_locked(payload: dict, symbol: str, strategy_id: str) -> dict:
 
     try:
         price, _ = _last_price_and_atr(symbol)
-    except Exception:
+    except Exception as e:
         # Binance KO : prix de l'alerte, sinon entrée (PnL 0 plutôt que blocage)
         try:
             price = float(payload.get("price") or pos["entry_price"])
+            used = "payload" if payload.get("price") else "entry"
+            print(f"[PAPER]  fetch prix KO ({type(e).__name__}: {e}) — repli {used} {price:.2f}",
+                  file=sys.stderr)
         except (TypeError, ValueError):
             price = pos["entry_price"]
+            print(f"[PAPER]  fetch prix KO ({type(e).__name__}: {e}) — repli entrée {price:.2f} (PnL=0)",
+                  file=sys.stderr)
 
     qty = pos["qty"] / 2 if pos["tp1_done"] else pos["qty"]
     _write_trade(pos, price, qty, "strategy_exit")
@@ -280,12 +285,22 @@ def _write_trade(pos: dict, exit_price: float, exited_qty: float, label: str):
         "notes": f"paper {label} tf:{pos['tf']} regime:{pos['regime_at_entry']} fees:{fees:.2f}",
         "strategy_id": strategy_id,
     }
-    write_header = not TRADES_CSV.exists() or TRADES_CSV.stat().st_size == 0
-    with open(TRADES_CSV, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
+    try:
+        write_header = not TRADES_CSV.exists() or TRADES_CSV.stat().st_size == 0
+        with open(TRADES_CSV, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+    except OSError as csv_err:
+        print(f"[PAPER]  ERREUR CSV ({csv_err}) — sidecar JSONL activé", file=sys.stderr)
+        sidecar = TRADES_CSV.with_suffix(".jsonl")
+        try:
+            with open(sidecar, "a", encoding="utf-8") as f:
+                f.write(json.dumps({**row, "label": label, "_csv_error": str(csv_err)}) + "\n")
+        except OSError as sidecar_err:
+            print(f"[PAPER]  ERREUR SIDECAR ({sidecar_err}) — trade perdu !", file=sys.stderr)
+            raise csv_err  # re-raise: caller must NOT remove position
     print(f"[PAPER]  CLÔTURE [{strategy_id}] {label} {pos['symbol']} "
           f"@ {exit_px:.2f} → PnL {pnl:+.2f}$")
 

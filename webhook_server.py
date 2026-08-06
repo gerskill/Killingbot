@@ -22,6 +22,7 @@ import json
 import csv
 import os
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -195,7 +196,8 @@ def webhook(token):
                             "closed": result["closed"], "detail": result["reason"]}), 200
         except Exception as e:
             print(f"[PAPER]  erreur exit sync ({e}) — signal loggé seulement")
-            return jsonify({"status": "ok", "action": "exit_sync_failed"}), 200
+            return jsonify({"status": "executor_error", "action": "exit_sync_failed",
+                            "detail": str(e)}), 200
 
     # ─── FILTRE DE RÉGIME (condition stricte, en amont de tout) ───
     # UNDECIDED → signal rejeté avant même la validation confluence.
@@ -246,7 +248,8 @@ def webhook(token):
         if not result["opened"]:
             print(f"[PAPER]  non ouvert : {result['reason']}")
     except Exception as e:
-        print(f"[PAPER]  erreur executor ({e}) — signal loggé seulement")
+        print(f"[PAPER]  erreur executor ({e}) — signal loggé seulement, position non ouverte",
+              file=sys.stderr)
 
     # Sync dashboard Vercel
     try:

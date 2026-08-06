@@ -276,11 +276,18 @@ def update_config(config: dict, response: dict):
     if param != "none" and param in config["strategy"]["risk_params"]:
         config["strategy"]["risk_params"][param] = update["new_value"]
     # Version bump + horodatage
-    major, minor = config["version"].lstrip("v").split(".")
-    config["version"] = f"v{major}.{int(minor) + 1}"
+    ver_parts = config["version"].lstrip("v").split(".", 1)
+    major = ver_parts[0]
+    try:
+        minor = int(ver_parts[1]) + 1 if len(ver_parts) > 1 else 1
+    except ValueError:
+        minor = 1
+    config["version"] = f"v{major}.{minor}"
     config["updated_at"] = datetime.now(UTC).isoformat()
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+    # Atomic write: write to temp then replace — crash mid-write can't corrupt config
+    tmp = CONFIG_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(CONFIG_FILE)
 
 
 def log(msg: str):
