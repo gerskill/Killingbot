@@ -51,6 +51,7 @@ SORT choice(statut = "prouve-live", 0, choice(statut = "walk-forward-ok", 1, cho
 - [[stoic_123_cassure]] — STOIC 1-2-3, entrée sur cassure (mode issu du test PTB)
 
 ### ⚪ Non vérifié
+- [[pp_st_ppp_stocks]] — PP-ST + filtre fondamental PPP, actions (code prêt, à tester)
 - [[pp_st_btc_4h]] · [[pp_st_btc_4h_v2_ls]]
 - [[killingbot_hybrid_v1]] · [[killingbot_hybrid_v2]] · [[killingbot_hybrid_v3_mtf]]
 - [[killingbot_intraday_v1]] · [[killingbot_meanrev_v1]]

@@ -140,6 +140,10 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
 
     bull = (c > ema200).values
     trending = (adx >= p["adx_min"]).values
+    # Filtre d'entrée externe optionnel (ex. PPP fondamental), aligné sur l'index.
+    mask = p.get("_entry_mask")
+    allowed = (mask.reindex(df.index).fillna(False).astype(bool).values
+               if mask is not None else np.ones(n, dtype=bool))
 
     equity = 10000.0
     curve = [equity]
@@ -176,7 +180,7 @@ def run_backtest(df: pd.DataFrame, params: dict) -> dict:
             trades.append({"pnl": pnl, "pct": pnl / max(prev, 1e-9), "date": str(df.index[i])})
             in_pos = False
 
-        elif not in_pos and flip_up and bull[i] and trending[i]:
+        elif not in_pos and flip_up and bull[i] and trending[i] and allowed[i]:
             entry_px = px * (1 + SLIP)
             qty = equity / entry_px          # 100 % de l'équité, comme l'original
             in_pos = True
