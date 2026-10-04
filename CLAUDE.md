@@ -44,7 +44,8 @@ TraderMorin × aiedge | Claude Trading Architect
 | `vault/BEST_STRATEGIES.md` | 🏆 Top 10 stratégies backtestées |
 | `vault/AGENT_LOG.md` | Log sessions exploration |
 | `vault/memory.json` | Mémoire persistante agents |
-| `vault/strategies/` | Fiches variantes KB_* |
+| `vault/strategies/` | Fiches Obsidian — 1 par stratégie, `statut` en YAML (tableau de bord : `_Tableau de bord stratégies.md`) |
+| `vault/templates/` | Modèles Obsidian (`Fiche stratégie`) |
 | `backtest/rapport_claude.txt` | Rapport hebdo perf (semaine en cours) |
 | `backtest/ray_magenta_report.md` | Rapport backtest Ray Magenta |
 | `docs/guides/SPRING_INDICATOR_GUIDE.md` | Guide indicateur Spring (Wyckoff) |

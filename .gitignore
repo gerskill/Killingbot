@@ -74,3 +74,8 @@ garch_output.json
 __pycache__/
 *.pyc
 .DS_Store
+
+# Obsidian (état local de l’éditeur)
+.obsidian/workspace*.json
+.obsidian/cache
+.trash/

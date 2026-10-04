@@ -2,6 +2,8 @@
 
 _Dernière purge : 2026-07-25. Ce fichier est le seul à lire pour savoir où on en est._
 
+_Fiches Obsidian par stratégie (une fiche, un statut) : [[_Tableau de bord stratégies]]._
+
 **Règle qui a produit ce fichier** : un chiffre de backtest n'est vrai que s'il a été
 recontrôlé au Strategy Tester TradingView, en direct, à l'écran. Un sweep automatique,
 même avec 35 variantes, ne prouve rien tant que la meilleure n'a pas passé cette étape —
